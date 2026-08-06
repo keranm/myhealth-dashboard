@@ -1,0 +1,6 @@
+{
+  "name": "myHealth Dashboard",
+  "render_readme": true,
+  "filename": "myhealth-dashboard.js",
+  "homeassistant": "2024.1.0"
+}

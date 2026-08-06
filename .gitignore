@@ -1,0 +1,7 @@
+# A snapshot of a real instance's health data. Never committed.
+tools/states.json
+tools/*.json
+
+.DS_Store
+__pycache__/
+*.pyc
