@@ -117,4 +117,4 @@ gitignored.
 
 ## Licence
 
-MIT.
+MIT — [The Idea Works](https://theidea.works).
