@@ -13,8 +13,9 @@ otherwise.
 
 One custom card, no dependencies, no build step beyond concatenating `src/`.
 
-> **Status: in development.** The resolver and its test harness are built. The
-> views are not. See [PLAN.md](PLAN.md).
+> **Status: in development.** The resolver, the freshness layer and the Today
+> view are built. Body, Heart and Movement are not — they say so rather than
+> rendering empty.
 
 ---
 
@@ -47,14 +48,21 @@ reading as today's.
 ## Layout
 
 ```
-src/01-core.js        opens the IIFE, helpers
-src/02-roles.js       the role catalogue — every metric, its unit and its freshness window
-src/03-resolve.js     discovery scoring, measurement age, tab liveness
-src/99-export.js      closes it; exports for the browser and for node
-build.py              concatenates src/*.js -> dist/myhealth-dashboard.js
-tools/ha.py           HA REST + websocket helper
-tools/dump_states.py  snapshot /api/states for the harness (gitignored — it is health data)
+src/01-core.js         opens the IIFE, helpers
+src/02-roles.js        the role catalogue — every metric, its unit and its freshness window
+src/03-resolve.js      discovery scoring, measurement age, source coherence, tab liveness
+src/04-freshness.js    recovering a real measurement time from long-term statistics
+src/05-format.js       units, relative time, clinical bands, and what may be shown at all
+src/06-style.js        design tokens and the stylesheet, light and dark
+src/07-dom.js          element helpers and the activity rings
+src/08-today.js        the Today view
+src/09-card.js         the custom element: tab chrome, hass wiring, statistics fetch
+src/99-export.js       closes it; exports for the browser and for node
+build.py               concatenates src/*.js -> dist/myhealth-dashboard.js
+tools/ha.py            HA REST + websocket helper
+tools/dump_states.py   snapshot states + statistics for the harness (gitignored — it is health data)
 tools/resolve_check.js the harness
+tools/preview.html     render the built card outside HA, against a dump
 ```
 
 Edit `src/`, never `dist/`.
@@ -85,12 +93,27 @@ was printed against a live instance, and each is now an assertion:
   — their own declared fallbacks
 - `fat_free_mass` bound to lean mass rather than the directly measured value
 
-## Design
+## Looking at it without Home Assistant
 
-`design_handoff_health_dashboard/` — the visual specification: seven
-screenshots, final tokens, and two `.dc.html` prototypes. Fidelity is high and
-the visual design is settled. Its *architecture* advice is not followed; see
-PLAN.md §1.
+`tools/preview.html` fakes exactly as much of `hass` as the card touches and
+loads the built `dist/` file, so the shipped code is what you see:
+
+```sh
+python3 tools/dump_states.py
+python3 -m http.server 8777
+# http://localhost:8777/tools/preview.html
+```
+
+`?dark=1` forces the dark palette. `?only=withings` keeps only entities whose
+id matches, which is how the standalone claim gets looked at rather than merely
+asserted — a user with one scale and nothing else should get a page that
+degrades, not one that breaks.
+
+## A note on test data
+
+Every fixture in the harness and every number in a code comment is invented.
+The repo carries no real readings, and `tools/states.json` — which does — is
+gitignored.
 
 ## Licence
 

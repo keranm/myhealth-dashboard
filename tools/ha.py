@@ -5,23 +5,35 @@ repo. Parse it line-wise — an earlier copy of this helper did
 `read().split(':', 1)[1]` and swallowed the whole file the moment env.txt grew
 a second line.
 """
-import json, pathlib, urllib.request
+import json, os, pathlib, urllib.request
 
-ENV = pathlib.Path.home() / "Development/HomeAssistant-Plugins/env.txt"
+# Nothing about one instance is baked in here. Point HA_ENV_FILE wherever the
+# credentials live, or drop an env.txt beside the repo; the base URL and token
+# come from that file or straight from the environment.
+ENV = pathlib.Path(os.environ.get(
+    "HA_ENV_FILE", pathlib.Path(__file__).resolve().parents[2] / "env.txt"))
 
 
 def _env():
     out = {}
-    for line in ENV.read_text().splitlines():
-        if ":" in line and not line.lstrip().startswith("#"):
-            k, v = line.split(":", 1)
-            out[k.strip()] = v.strip()
+    if ENV.exists():
+        for line in ENV.read_text().splitlines():
+            if ":" in line and not line.lstrip().startswith("#"):
+                k, v = line.split(":", 1)
+                out[k.strip()] = v.strip()
     return out
 
 
 _E = _env()
-BASE = _E.get("ha_base_url", "http://homeassistant.local:8123")
-TOKEN = _E["ha_api_token"]
+BASE = (os.environ.get("HA_BASE_URL") or _E.get("ha_base_url")
+        or _E.get("ha_external_url"))
+TOKEN = os.environ.get("HA_TOKEN") or _E.get("ha_api_token")
+if not BASE or not TOKEN:
+    raise SystemExit(
+        "No Home Assistant credentials. Set HA_BASE_URL and HA_TOKEN, or put\n"
+        "  ha_base_url: http://your-instance:8123\n"
+        "  ha_api_token: <long-lived token>\n"
+        f"in {ENV} (or point HA_ENV_FILE at it).")
 H = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
 
 

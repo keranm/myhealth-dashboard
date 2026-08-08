@@ -5,3 +5,8 @@ tools/*.json
 .DS_Store
 __pycache__/
 *.pyc
+
+# Working documents that describe one real instance and one real person's
+# readings. Kept on disk, never published.
+PLAN.md
+design_handoff_health_dashboard/
