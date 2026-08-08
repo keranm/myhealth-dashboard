@@ -1191,13 +1191,28 @@ ${DARK_CSS}
 .bar {
   position: sticky; top: 0; z-index: 5;
   background: var(--chrome); height: 60px;
+  /* Measured against itself, so the rule below holds however wide the
+     viewport claims to be. */
+  container-type: inline-size;
+}
+/* The sync chip is the least important thing in the bar and the first to go:
+   without this it kept its ~110px and pushed Movement off the end of a
+   scrollable tab strip, where nothing suggested it was still there. The dot
+   stays, so "when did this last sync" is still answerable at a glance. */
+@container (max-width: 560px) {
+  .sync-text { display: none; }
 }
 .bar-inner {
   max-width: 1360px; margin: 0 auto; padding: 0 32px;
   height: 100%; display: flex; align-items: center;
-  justify-content: space-between; gap: 16px;
+  justify-content: space-between; gap: 16px; min-width: 0;
 }
-.tabs { display: flex; height: 100%; }
+/* A flex item will not shrink below its content unless told it may, and four
+   tabs plus a SYNCED chip is wider than a phone. Without these the whole page
+   inherited that width and every card was clipped at the right edge. */
+.tabs { display: flex; height: 100%; min-width: 0; overflow-x: auto;
+        scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   font-size: 15px; font-weight: 600; padding: 0 16px;
   height: 100%; display: flex; align-items: center;
@@ -1209,10 +1224,11 @@ ${DARK_CSS}
 .tab[aria-selected="true"] { color: #fff; border-bottom-color: var(--teal); }
 .tab:focus-visible { outline: 2px solid var(--teal); outline-offset: -4px; }
 
-.sync { display: flex; align-items: center; gap: 8px; }
+.sync { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 0 1 auto; }
 .sync-text {
   font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
   color: var(--chrome-inactive); text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
 }
 
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); flex: none; }
@@ -1225,10 +1241,17 @@ ${DARK_CSS}
   max-width: 1360px; margin: 0 auto; padding: 28px 32px 56px;
   display: flex; flex-direction: column; gap: 16px;
 }
+/* Column counts follow the space available, not the viewport.
+   auto-fit plus minmax reflows on the width the row actually has, so a card
+   embedded in a narrow column collapses correctly even where a viewport media
+   query never fires — which is what happens in the Home Assistant companion
+   app. The min(100%, N) guard is what stops the track being wider than its
+   container when there is less than N to give it; without it a narrow parent
+   overflows instead of dropping to one column. */
 .row { display: grid; gap: 16px; align-items: start; }
-.row.hero { grid-template-columns: 1fr 380px; }
-.row.four { grid-template-columns: repeat(4, 1fr); }
-.row.two { grid-template-columns: repeat(2, 1fr); }
+.row.hero { grid-template-columns: minmax(0, 1fr) minmax(0, 380px); }
+.row.four { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+.row.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
 
 @media (max-width: 1100px) {
   .row.hero, .row.four, .row.two { grid-template-columns: 1fr; }
@@ -1258,7 +1281,8 @@ ${DARK_CSS}
 }
 .metric .unit { font-size: 15px; font-weight: 500; color: var(--ink-muted); margin-left: 4px; }
 .support { font-size: 13px; color: var(--ink-muted); }
-.body { font-size: 15px; line-height: 1.65; color: var(--ink-2); text-wrap: pretty; }
+.body { font-size: 15px; line-height: 1.65; color: var(--ink-2);
+        text-wrap: pretty; overflow-wrap: anywhere; }
 
 .badge {
   font-family: var(--mono); font-size: 11px; font-weight: 600;
@@ -1270,7 +1294,8 @@ ${DARK_CSS}
 .badge.bad  { background: var(--red); color: #fff; }
 .badge.gap  { border: 1px solid var(--dim-border); color: var(--ink-muted); }
 
-.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.head { display: flex; align-items: center; justify-content: space-between;
+        gap: 8px 12px; flex-wrap: wrap; }
 
 /* Vitals cards carry their status in a 3px top border. */
 .card.vital { border-top: 3px solid var(--dim-border); padding-top: 16px; }
@@ -1287,12 +1312,20 @@ ${DARK_CSS}
 .stack { display: flex; flex-direction: column; }
 
 /* --- coach -------------------------------------------------------- */
-.coach { display: flex; gap: 32px; align-items: flex-start; }
+/* Wraps on available space, not on viewport width.
+   The media query below says the same thing and is not enough on its own: in
+   the Home Assistant companion app the card was still laid out side by side
+   with the text column running off the right edge, so whatever the webview
+   reports as its viewport, it is not what a phone screen suggests. Flex-wrap
+   needs no such report — once there is less than 280px for the prose the
+   column drops below the ring on its own. */
+.coach { display: flex; flex-wrap: wrap; gap: 24px 32px; align-items: flex-start; }
 /* Capped, not just flexed: with no medication card beside it the hero card
    spans the full 1360px, and coach prose set to that measure is unreadable.
    74ch is a comfortable line for 15px body copy.
    (No backticks in this file — MH.CSS is a template literal.) */
-.coach-main { flex: 1; display: flex; flex-direction: column; gap: 11px; min-width: 0; max-width: 74ch; }
+.coach-main { flex: 1 1 280px; display: flex; flex-direction: column;
+              gap: 11px; min-width: 0; max-width: 74ch; }
 .headline { font-size: 25px; font-weight: 600; color: var(--ink); line-height: 1.3; }
 .hr { height: 1px; background: var(--rule); }
 
@@ -1368,7 +1401,7 @@ ${DARK_CSS}
 .empty { padding: 40px 0; text-align: center; color: var(--ink-muted); font-size: 15px; }
 
 /* --- charts ------------------------------------------------------- */
-.row.hero-left { grid-template-columns: 380px 1fr; }
+.row.hero-left { grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); }
 @media (max-width: 1100px) { .row.hero-left { grid-template-columns: 1fr; } }
 
 .hero-metric { font-size: 52px; letter-spacing: -.02em; margin: 6px 0 10px; }
@@ -1775,8 +1808,20 @@ ${DARK_CSS}
   /* ------------------------------------------------------------------ *
    * Medication
    * ------------------------------------------------------------------ *
-   * Both states are built, behind a role that resolves nowhere yet — see
-   * PLAN.md §4. The card appears the day a medication source exists.
+   *
+   * Read-only, deliberately, and it is the API that decides that rather than
+   * a preference. Apple Health does expose medications — `HKMedicationDoseEvent`,
+   * iOS 26 and later — but every property is readonly and both `init` and
+   * `new` are `NS_UNAVAILABLE`, so no third-party app can construct a dose
+   * event. A `Log now` button here could never write one, whatever it was
+   * wired to.
+   *
+   * So the division of labour is: Home Assistant reminds, the Health app logs,
+   * and this card reports. A button that appeared to log a dose while the
+   * Health app disagreed would be worse than no button — this is medication.
+   *
+   * The role still resolves nowhere on this instance, so the card is normally
+   * absent. It appears the day a medication source exists.
    */
   const medicationCard = () => {
     const card = el("div", "card med-due");
@@ -1785,16 +1830,8 @@ ${DARK_CSS}
     const eyebrow = el("div", "eyebrow", "Medication");
     const title = el("div", "med-title", "");
     const body = el("div", "med-body", "");
-    const actions = el("div", "med-actions");
-    const logBtn = el("button", "btn amber", "Log now");
-    const snoozeBtn = el("button", "btn ghost", "Snooze 1h");
-    for (const b of [logBtn, snoozeBtn]) {
-      b.disabled = true;
-      b.title = "Actions that write back arrive with the write path";
-    }
-    add(actions, logBtn, snoozeBtn);
     add(head, dot, eyebrow);
-    add(card, head, title, body, actions);
+    add(card, head, title, body);
     card.style.display = "none";
 
     card.update = (R, now) => {
@@ -1809,8 +1846,8 @@ ${DARK_CSS}
       title.textContent = logged ? "Logged today" : "Not recorded today";
       body.textContent = logged
         ? "Recorded " + (MH.ageLabel(m, now) || "today") + "."
-        : "This card stays until today's entry arrives.";
-      hideIf(actions, logged);
+        : "Log it in the Health app as usual — this card clears when today's "
+          + "entry arrives.";
     };
     return card;
   };

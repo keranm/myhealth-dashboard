@@ -94,6 +94,18 @@
     };
 
     const card = document.createElement("myhealth-dashboard");
+    /* ?box=390 constrains the card without narrowing the viewport, which is
+       the case the media queries cannot see: in the Home Assistant companion
+       app the card was laid out side by side and clipped while the viewport
+       apparently reported something much wider. If the layout only collapses
+       when a media query fires, it fails here — and this is the case that
+       matters on a phone. */
+    if (q.get("box")) {
+      card.style.maxWidth = q.get("box") + "px";
+      card.style.display = "block";
+      card.style.overflow = "hidden";
+      card.style.outline = "2px dashed #c0334d";
+    }
     card.setConfig({ type: "custom:myhealth-dashboard", tab: q.get("tab") || "today" });
     if (q.get("dark")) card.setAttribute("data-theme", "dark");
     document.body.appendChild(card);

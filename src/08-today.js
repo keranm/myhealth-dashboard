@@ -162,8 +162,20 @@
   /* ------------------------------------------------------------------ *
    * Medication
    * ------------------------------------------------------------------ *
-   * Both states are built, behind a role that resolves nowhere yet — see
-   * PLAN.md §4. The card appears the day a medication source exists.
+   *
+   * Read-only, deliberately, and it is the API that decides that rather than
+   * a preference. Apple Health does expose medications — `HKMedicationDoseEvent`,
+   * iOS 26 and later — but every property is readonly and both `init` and
+   * `new` are `NS_UNAVAILABLE`, so no third-party app can construct a dose
+   * event. A `Log now` button here could never write one, whatever it was
+   * wired to.
+   *
+   * So the division of labour is: Home Assistant reminds, the Health app logs,
+   * and this card reports. A button that appeared to log a dose while the
+   * Health app disagreed would be worse than no button — this is medication.
+   *
+   * The role still resolves nowhere on this instance, so the card is normally
+   * absent. It appears the day a medication source exists.
    */
   const medicationCard = () => {
     const card = el("div", "card med-due");
@@ -172,16 +184,8 @@
     const eyebrow = el("div", "eyebrow", "Medication");
     const title = el("div", "med-title", "");
     const body = el("div", "med-body", "");
-    const actions = el("div", "med-actions");
-    const logBtn = el("button", "btn amber", "Log now");
-    const snoozeBtn = el("button", "btn ghost", "Snooze 1h");
-    for (const b of [logBtn, snoozeBtn]) {
-      b.disabled = true;
-      b.title = "Actions that write back arrive with the write path";
-    }
-    add(actions, logBtn, snoozeBtn);
     add(head, dot, eyebrow);
-    add(card, head, title, body, actions);
+    add(card, head, title, body);
     card.style.display = "none";
 
     card.update = (R, now) => {
@@ -196,8 +200,8 @@
       title.textContent = logged ? "Logged today" : "Not recorded today";
       body.textContent = logged
         ? "Recorded " + (MH.ageLabel(m, now) || "today") + "."
-        : "This card stays until today's entry arrives.";
-      hideIf(actions, logged);
+        : "Log it in the Health app as usual — this card clears when today's "
+          + "entry arrives.";
     };
     return card;
   };
