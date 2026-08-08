@@ -309,6 +309,62 @@ ${DARK_CSS}
 
 .empty { padding: 40px 0; text-align: center; color: var(--ink-muted); font-size: 15px; }
 
+/* --- charts ------------------------------------------------------- */
+.row.hero-left { grid-template-columns: 380px 1fr; }
+@media (max-width: 1100px) { .row.hero-left { grid-template-columns: 1fr; } }
+
+.hero-metric { font-size: 52px; letter-spacing: -.02em; margin: 6px 0 10px; }
+.between { display: flex; justify-content: space-between; gap: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; margin-top: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+         gap: 12px; margin-top: 16px; }
+.tile { background: var(--tile); border-radius: 12px; padding: 16px 18px; }
+.grid2 .tile { background: none; padding: 0; }
+
+.chart { position: relative; margin-top: 14px; background: var(--sunken);
+         border-radius: 8px; overflow: hidden; }
+.plot { width: 100%; height: 100%; display: block; }
+.gridline { stroke: var(--rule); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.target { stroke: var(--green); stroke-width: 1.5; stroke-dasharray: 5 4;
+          vector-effect: non-scaling-stroke; }
+.spark { width: 100%; height: 26px; display: block; margin: 10px 0 8px; }
+
+.axis { display: flex; justify-content: space-between; margin-top: 8px; }
+.axis-tick { font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+             color: var(--ink-faint); text-transform: uppercase; }
+
+.ranges { display: flex; gap: 6px; }
+.range {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: none; color: var(--ink-muted);
+  cursor: pointer;
+}
+.range[aria-selected="true"] { background: var(--chrome); color: #fff; border-color: var(--chrome); }
+
+.bars { display: flex; align-items: flex-end; gap: 5px; margin-top: 14px;
+        background: var(--sunken); border-radius: 8px; padding: 10px;
+        border-bottom: 1px solid var(--rule); }
+.bars-row { display: flex; align-items: flex-end; gap: 5px; width: 100%; height: 100%; }
+/* Named daybar, not bar: the sticky tab bar above is .bar, and a later
+   rule of the same name repainted the chrome with the under-goal colour.
+   (No backticks in this file — MH.CSS is a template literal.) */
+.daybar { flex: 1; min-height: 4px; border-radius: 3px 3px 0 0; background: var(--green-light); }
+.daybar.partial {
+  background-image: repeating-linear-gradient(45deg,
+    rgba(255,255,255,.55) 0 3px, transparent 3px 6px);
+}
+
+.range-bar { display: flex; gap: 2px; height: 8px; margin: 4px 0 6px; }
+.range-bar > i { border-radius: 3px; }
+.range-axis { display: flex; gap: 2px; margin-bottom: 12px; }
+.range-axis > span { text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .plot path { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+@keyframes drawLine { to { stroke-dashoffset: 0; } }
+
 /* --- motion ------------------------------------------------------- */
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(10px); }

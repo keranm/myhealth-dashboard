@@ -91,22 +91,19 @@
       MH.add(inner, tabs, sync);
       MH.add(bar, inner);
 
-      this._views = { today: MH.todayView(this._config) };
-      this._placeholders = {};
+      this._views = {
+        today: MH.todayView(this._config),
+        body: MH.bodyView(),
+        heart: MH.heartView(),
+        movement: MH.movementView(this._config)
+      };
+      this._series = {};
       const holder = MH.el("div");
-      MH.add(holder, this._views.today);
-
-      /* Body, Heart and Movement are the next phase. An empty panel would be
-         a worse lie than saying so. */
       for (const key of MH.TABS) {
-        if (this._views[key]) continue;
-        const v = MH.el("div", "view");
-        const c = MH.el("div", "card");
-        MH.add(c, MH.el("div", "empty",
-          VIEW_TITLES[key] + " is not built yet — it arrives with the charts."));
-        MH.add(v, c);
-        v.update = () => {};
-        this._views[key] = v;
+        const v = this._views[key];
+        /* A range selector changes what the view wants, so it asks for a
+           refetch rather than reaching for the websocket itself. */
+        v.request = () => { this._seriesFor(key, true); };
         MH.add(holder, v);
       }
 
@@ -174,8 +171,46 @@
       }
       if (this._tabButtons[this._tab].style.display === "none") this._select("today");
 
-      this._views[this._tab].update(this._resolved, now);
+      this._views[this._tab].update(this._resolved, now, this._series[this._tab] || {});
       this._paintSync(now);
+      this._seriesFor(this._tab, false);
+    }
+
+    /**
+     * Statistics for whichever view is showing.
+     *
+     * Only the visible tab is fetched, and only once — three history views
+     * asking on every `set hass` would be a websocket round trip per state
+     * change in the house. `force` is the range selector, which genuinely does
+     * want new data.
+     */
+    _seriesFor(tab, force) {
+      const view = this._views[tab];
+      if (!view.series) return;
+      const key = tab + ":" + JSON.stringify(view.series().map((s) => [s.key, s.days, s.mode]));
+      if (!force && this._seriesKey === key) return;
+      if (this._seriesPending === key) return;
+      this._seriesKey = key;
+      this._seriesPending = key;
+
+      const wants = view.series();
+      const now = Date.now();
+      Promise.all(wants.map((want) => {
+        const r = this._resolved[want.role];
+        if (!r || !r.entity_id || r.blank) return Promise.resolve([want.key, []]);
+        return MH.fetchSeries(this._hass, r.entity_id,
+                              { days: want.days, mode: want.mode, now })
+          .then((pts) => [want.key, pts])
+          .catch(() => [want.key, []]);
+      })).then((pairs) => {
+        const out = {};
+        for (const [k, v] of pairs) out[k] = v;
+        this._series[tab] = out;
+        this._seriesPending = null;
+        if (this._built && this._tab === tab) {
+          view.update(this._resolved, Date.now(), out);
+        }
+      });
     }
 
     _paintSync(now) {

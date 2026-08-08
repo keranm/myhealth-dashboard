@@ -13,9 +13,9 @@ otherwise.
 
 One custom card, no dependencies, no build step beyond concatenating `src/`.
 
-> **Status: in development.** The resolver, the freshness layer and the Today
-> view are built. Body, Heart and Movement are not — they say so rather than
-> rendering empty.
+> **Status: in development.** All four views are built. Write-back actions
+> (log, snooze, ask the coach) render but are disabled until the read path is
+> trusted.
 
 ---
 
@@ -57,6 +57,9 @@ src/06-style.js        design tokens and the stylesheet, light and dark
 src/07-dom.js          element helpers and the activity rings
 src/08-today.js        the Today view
 src/09-card.js         the custom element: tab chrome, hass wiring, statistics fetch
+src/10-series.js       history for charts, and daily totals from a resetting counter
+src/11-charts.js       line, bar and sparkline primitives in inline SVG
+src/12-views.js        the Body, Heart and Movement views
 src/99-export.js       closes it; exports for the browser and for node
 build.py               concatenates src/*.js -> dist/myhealth-dashboard.js
 tools/ha.py            HA REST + websocket helper
@@ -108,6 +111,29 @@ python3 -m http.server 8777
 id matches, which is how the standalone claim gets looked at rather than merely
 asserted — a user with one scale and nothing else should get a page that
 degrades, not one that breaks.
+
+## Daily totals from a counter that resets
+
+Worth knowing, because it is the one place a chart could be quietly wrong.
+Apple Health publishes steps as a counter that climbs through the day and
+resets at midnight, so its long-term statistics are `mean` — the average
+height of a sawtooth, roughly half the day's steps.
+
+The day's total is its **closing value**, and specifically not its maximum.
+A health sensor holds its last value forever, so at 00:05 the counter still
+reads yesterday's total, and that carried value is the largest number in
+today's bucket:
+
+| day | last hour | day max |
+|---|---|---|
+| 2026-08-05 | 11,240 | 11,240 |
+| 2026-08-06 | 6,415 | 11,240 &nbsp;&larr; yesterday's closing |
+| 2026-08-07 | 4,902 | 6,415 &nbsp;&larr; and again |
+
+So `max` is a one-day-lagged copy of the series rather than the series. The
+card prefers a real `sum` statistic where an integration provides one, and
+otherwise folds hourly buckets down to daily closes. Today's bar is drawn
+hatched, because a partial day drawn solid reads as a bad day.
 
 ## A note on test data
 

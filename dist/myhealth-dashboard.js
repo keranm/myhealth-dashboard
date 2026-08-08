@@ -1350,6 +1350,62 @@ ${DARK_CSS}
 
 .empty { padding: 40px 0; text-align: center; color: var(--ink-muted); font-size: 15px; }
 
+/* --- charts ------------------------------------------------------- */
+.row.hero-left { grid-template-columns: 380px 1fr; }
+@media (max-width: 1100px) { .row.hero-left { grid-template-columns: 1fr; } }
+
+.hero-metric { font-size: 52px; letter-spacing: -.02em; margin: 6px 0 10px; }
+.between { display: flex; justify-content: space-between; gap: 12px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 20px; margin-top: 14px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+         gap: 12px; margin-top: 16px; }
+.tile { background: var(--tile); border-radius: 12px; padding: 16px 18px; }
+.grid2 .tile { background: none; padding: 0; }
+
+.chart { position: relative; margin-top: 14px; background: var(--sunken);
+         border-radius: 8px; overflow: hidden; }
+.plot { width: 100%; height: 100%; display: block; }
+.gridline { stroke: var(--rule); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.target { stroke: var(--green); stroke-width: 1.5; stroke-dasharray: 5 4;
+          vector-effect: non-scaling-stroke; }
+.spark { width: 100%; height: 26px; display: block; margin: 10px 0 8px; }
+
+.axis { display: flex; justify-content: space-between; margin-top: 8px; }
+.axis-tick { font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+             color: var(--ink-faint); text-transform: uppercase; }
+
+.ranges { display: flex; gap: 6px; }
+.range {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: none; color: var(--ink-muted);
+  cursor: pointer;
+}
+.range[aria-selected="true"] { background: var(--chrome); color: #fff; border-color: var(--chrome); }
+
+.bars { display: flex; align-items: flex-end; gap: 5px; margin-top: 14px;
+        background: var(--sunken); border-radius: 8px; padding: 10px;
+        border-bottom: 1px solid var(--rule); }
+.bars-row { display: flex; align-items: flex-end; gap: 5px; width: 100%; height: 100%; }
+/* Named daybar, not bar: the sticky tab bar above is .bar, and a later
+   rule of the same name repainted the chrome with the under-goal colour.
+   (No backticks in this file — MH.CSS is a template literal.) */
+.daybar { flex: 1; min-height: 4px; border-radius: 3px 3px 0 0; background: var(--green-light); }
+.daybar.partial {
+  background-image: repeating-linear-gradient(45deg,
+    rgba(255,255,255,.55) 0 3px, transparent 3px 6px);
+}
+
+.range-bar { display: flex; gap: 2px; height: 8px; margin: 4px 0 6px; }
+.range-bar > i { border-radius: 3px; }
+.range-axis { display: flex; gap: 2px; margin-bottom: 12px; }
+.range-axis > span { text-align: center; }
+
+@media (prefers-reduced-motion: reduce) {
+  .plot path { animation: none !important; stroke-dashoffset: 0 !important; }
+}
+@keyframes drawLine { to { stroke-dashoffset: 0; } }
+
 /* --- motion ------------------------------------------------------- */
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(10px); }
@@ -2020,22 +2076,19 @@ ${DARK_CSS}
       MH.add(inner, tabs, sync);
       MH.add(bar, inner);
 
-      this._views = { today: MH.todayView(this._config) };
-      this._placeholders = {};
+      this._views = {
+        today: MH.todayView(this._config),
+        body: MH.bodyView(),
+        heart: MH.heartView(),
+        movement: MH.movementView(this._config)
+      };
+      this._series = {};
       const holder = MH.el("div");
-      MH.add(holder, this._views.today);
-
-      /* Body, Heart and Movement are the next phase. An empty panel would be
-         a worse lie than saying so. */
       for (const key of MH.TABS) {
-        if (this._views[key]) continue;
-        const v = MH.el("div", "view");
-        const c = MH.el("div", "card");
-        MH.add(c, MH.el("div", "empty",
-          VIEW_TITLES[key] + " is not built yet — it arrives with the charts."));
-        MH.add(v, c);
-        v.update = () => {};
-        this._views[key] = v;
+        const v = this._views[key];
+        /* A range selector changes what the view wants, so it asks for a
+           refetch rather than reaching for the websocket itself. */
+        v.request = () => { this._seriesFor(key, true); };
         MH.add(holder, v);
       }
 
@@ -2103,8 +2156,46 @@ ${DARK_CSS}
       }
       if (this._tabButtons[this._tab].style.display === "none") this._select("today");
 
-      this._views[this._tab].update(this._resolved, now);
+      this._views[this._tab].update(this._resolved, now, this._series[this._tab] || {});
       this._paintSync(now);
+      this._seriesFor(this._tab, false);
+    }
+
+    /**
+     * Statistics for whichever view is showing.
+     *
+     * Only the visible tab is fetched, and only once — three history views
+     * asking on every `set hass` would be a websocket round trip per state
+     * change in the house. `force` is the range selector, which genuinely does
+     * want new data.
+     */
+    _seriesFor(tab, force) {
+      const view = this._views[tab];
+      if (!view.series) return;
+      const key = tab + ":" + JSON.stringify(view.series().map((s) => [s.key, s.days, s.mode]));
+      if (!force && this._seriesKey === key) return;
+      if (this._seriesPending === key) return;
+      this._seriesKey = key;
+      this._seriesPending = key;
+
+      const wants = view.series();
+      const now = Date.now();
+      Promise.all(wants.map((want) => {
+        const r = this._resolved[want.role];
+        if (!r || !r.entity_id || r.blank) return Promise.resolve([want.key, []]);
+        return MH.fetchSeries(this._hass, r.entity_id,
+                              { days: want.days, mode: want.mode, now })
+          .then((pts) => [want.key, pts])
+          .catch(() => [want.key, []]);
+      })).then((pairs) => {
+        const out = {};
+        for (const [k, v] of pairs) out[k] = v;
+        this._series[tab] = out;
+        this._seriesPending = null;
+        if (this._built && this._tab === tab) {
+          view.update(this._resolved, Date.now(), out);
+        }
+      });
     }
 
     _paintSync(now) {
@@ -2158,6 +2249,838 @@ ${DARK_CSS}
     console.info("%c myhealth-dashboard %c " + MH.VERSION + " ",
                  "background:#0d2233;color:#fff", "background:#16c397;color:#0d2233");
   }
+
+  /* ------------------------------------------------------------------ *
+   * Series — history worth drawing
+   * ------------------------------------------------------------------ *
+   *
+   * Charts need a different question answered than cards do. A card asks
+   * "what is it now, and when was it measured"; a chart asks "what has it
+   * done", and long-term statistics are the only thing that remembers.
+   *
+   * Two problems have to be solved here rather than in the views:
+   *
+   *   1. A daily total is not a daily mean. Apple Health publishes steps as a
+   *      counter that climbs through the day and resets at midnight, so its
+   *      statistics are `mean` — the average height of a sawtooth, which is
+   *      roughly half the day's steps. Drawing that as "steps per day" is
+   *      wrong by a factor that looks plausible, which is the worst kind.
+   *
+   *   2. History arrives in two pieces. Imported history ends where live
+   *      recording begins, and the design requires no visible seam.
+   */
+
+  /**
+   * Daily totals for a counter that resets at midnight.
+   *
+   * The day's total is its **closing value**, and specifically not its
+   * maximum. Checked against this pattern on a live instance:
+   *
+   *     day        last hour   day max   imported truth
+   *     2026-08-05     11,240    11,240
+   *     2026-08-06      6,415    11,240   <- max is yesterday's closing
+   *     2026-08-07      4,902     6,415   <- and again
+   *
+   * A health sensor holds its last value forever, so at 00:05 the counter
+   * still reads yesterday's total. That carried value is the largest number
+   * in today's bucket, which makes `max` a one-day-lagged copy of the series
+   * rather than the series. The last populated hour is past the carry and is
+   * the real close.
+   *
+   * @param hourly [{ start, max }] ascending hourly buckets
+   * @returns [{ day: "YYYY-MM-DD", start: ms, value, partial }]
+   */
+  MH.dailyTotals = (hourly, now) => {
+    if (!hourly || !hourly.length) return [];
+    const today = MH.dayKey(now || Date.now());
+    const byDay = new Map();
+    for (const b of hourly) {
+      const v = b.max != null ? b.max : b.mean;
+      if (v == null) continue;
+      const key = MH.dayKey(b.start);
+      const seen = byDay.get(key);
+      /* Later hour wins outright — this is a closing value, not a maximum. */
+      if (!seen || b.start >= seen.start) byDay.set(key, { start: b.start, value: v });
+    }
+    const out = [];
+    for (const [day, got] of byDay) {
+      out.push({ day, start: got.start, value: got.value, partial: day === today });
+    }
+    return out.sort((a, b) => a.start - b.start);
+  };
+
+  MH.dayKey = (ms) => {
+    const d = new Date(ms);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") +
+           "-" + String(d.getDate()).padStart(2, "0");
+  };
+
+  /**
+   * Join an imported series to a live one without a seam.
+   *
+   * Where both cover a day the live series wins — it is the one still being
+   * written, and the imported copy is a snapshot of the same thing. The
+   * boundary is reported so a chart can say where it is rather than pretending
+   * a single origin.
+   */
+  MH.spliceSeries = (older, newer) => {
+    const by = new Map();
+    for (const p of older || []) by.set(p.day || p.start, p);
+    let seam = null;
+    for (const p of newer || []) {
+      const k = p.day || p.start;
+      if (by.has(k) && seam == null) seam = p.start;
+      by.set(k, p);
+    }
+    const pts = Array.from(by.values()).sort((a, b) => a.start - b.start);
+    if (seam == null && (older || []).length && (newer || []).length) {
+      seam = newer[0].start;
+    }
+    return { points: pts, seam };
+  };
+
+  /**
+   * Which statistic can answer "the total each day" for a role, and how.
+   *
+   * Preference order, and each step is a real drop in confidence:
+   *   sum    the integration keeps a proper total — believe it
+   *   state  an imported daily series carrying the day's own value
+   *   close  derived, per MH.dailyTotals
+   */
+  MH.totalStrategy = (meta) => {
+    if (!meta) return null;
+    if (meta.has_sum) return "sum";
+    if (meta.has_mean) return "close";
+    return null;
+  };
+
+  /**
+   * Fetch a series for charting.
+   *
+   * `period` is the recorder's, and the type asked for follows the strategy:
+   * a mean series is fetched as `max` at hourly resolution and folded down to
+   * daily closes, everything else is read directly.
+   */
+  MH.fetchSeries = async (hass, statId, opts) => {
+    opts = opts || {};
+    const now = opts.now || Date.now();
+    const days = opts.days || 30;
+    const mode = opts.mode || "mean";     // mean | daily_total | monthly
+    const start = new Date(now - days * DAY).toISOString();
+
+    const ask = async (period, types) => {
+      try {
+        const r = await hass.callWS({
+          type: "recorder/statistics_during_period",
+          start_time: start, statistic_ids: [statId], period, types
+        });
+        return (r && r[statId]) || [];
+      } catch (e) { return []; }
+    };
+
+    if (mode === "daily_total") {
+      /* Hourly, because the fold needs to know which bucket was last. */
+      const hourly = await ask("hour", ["max"]);
+      if (hourly.length) return MH.dailyTotals(hourly, now);
+      const daily = await ask("day", ["sum", "state"]);
+      return daily.map((b) => ({
+        day: MH.dayKey(b.start), start: b.start,
+        value: b.state != null ? b.state : b.sum, partial: false
+      })).filter((p) => p.value != null);
+    }
+
+    const period = mode === "monthly" ? "month" : "day";
+    const rows = await ask(period, ["mean", "min", "max"]);
+    return rows
+      .filter((b) => b.mean != null)
+      .map((b) => ({ start: b.start, value: b.mean, min: b.min, max: b.max }));
+  };
+
+  /** Min/max/last over a series, for axes and captions. */
+  MH.extent = (points, key) => {
+    const k = key || "value";
+    const vals = (points || []).map((p) => p[k]).filter((v) => v != null);
+    if (!vals.length) return null;
+    return { min: Math.min.apply(null, vals), max: Math.max.apply(null, vals),
+             first: vals[0], last: vals[vals.length - 1], n: vals.length };
+  };
+
+  /** Change over the window, as the design's "Down 0.4 kg over 30 days". */
+  MH.trend = (points) => {
+    const e = MH.extent(points);
+    if (!e || e.n < 2) return null;
+    const delta = e.last - e.first;
+    return { delta, up: delta > 0, flat: Math.abs(delta) < 1e-9 };
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Charts
+   * ------------------------------------------------------------------ *
+   *
+   * Inline SVG, no library. Each returns a node with an `update(points)` so a
+   * chart redraws without being rebuilt and without restarting its draw-in.
+   *
+   * The design's rule is that charts are supporting evidence, never the
+   * primary read — so these are deliberately plain: no tooltips competing with
+   * the headline number, no gridline noise, and an axis that labels the ends
+   * rather than every tick.
+   */
+
+  const NS = "http://www.w3.org/2000/svg";
+
+  /** Map a series into a viewBox, with a little headroom so a peak is not
+   *  glued to the top edge. */
+  const scaler = (points, w, h, opts) => {
+    opts = opts || {};
+    const xs = points.map((p) => p.start);
+    let lo = opts.min, hi = opts.max;
+    if (lo == null || hi == null) {
+      const e = MH.extent(points);
+      const pad = (e.max - e.min) * 0.12 || Math.abs(e.max || 1) * 0.1 || 1;
+      if (lo == null) lo = opts.zero ? 0 : e.min - pad;
+      if (hi == null) hi = e.max + pad;
+    }
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs);
+    const span = x1 - x0 || 1;
+    return {
+      lo, hi,
+      x: (t) => ((t - x0) / span) * w,
+      y: (v) => h - ((v - lo) / (hi - lo || 1)) * h
+    };
+  };
+
+  const path = (points, s) => points.map((p, i) =>
+    (i ? "L" : "M") + s.x(p.start).toFixed(1) + " " + s.y(p.value).toFixed(1)).join(" ");
+
+  /**
+   * A line chart.
+   *
+   * `drawLine` animates stroke-dashoffset from the path's own length, which is
+   * measured after the path is in the DOM — a fixed dash length would either
+   * clip a long series or leave a short one already drawn.
+   */
+  MH.lineChart = (opts) => {
+    opts = opts || {};
+    const H = opts.height || 230, W = 1000;
+    /* The axis is a sibling of the plot, not a child: the plot box clips to
+       its own height so a line cannot escape it, and an axis inside that box
+       is clipped along with it. */
+    const root = MH.el("div");
+    const wrap = MH.el("div", "chart");
+    wrap.style.height = H + "px";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("class", "plot");
+
+    const bands = document.createElementNS(NS, "g");
+    const grid = document.createElementNS(NS, "g");
+    const lines = document.createElementNS(NS, "g");
+    svg.appendChild(bands); svg.appendChild(grid); svg.appendChild(lines);
+    wrap.appendChild(svg);
+
+    const axis = MH.el("div", "axis");
+    MH.add(root, wrap, axis);
+
+    root.update = (series, cfg) => {
+      cfg = cfg || {};
+      while (lines.firstChild) lines.removeChild(lines.firstChild);
+      while (grid.firstChild) grid.removeChild(grid.firstChild);
+      while (bands.firstChild) bands.removeChild(bands.firstChild);
+      axis.textContent = "";
+
+      const all = [].concat.apply([], series.map((s) => s.points || []));
+      if (!all.length) {
+        axis.appendChild(MH.el("span", "axis-tick", "no history yet"));
+        return;
+      }
+      const s = scaler(all, W, H, cfg);
+
+      /* Clinical bands sit behind everything — the chart says which zone the
+         line is in, which is the whole reason the Heart chart exists. */
+      for (const b of cfg.bands || []) {
+        const yTop = s.y(Math.min(b.to, s.hi)), yBot = s.y(Math.max(b.from, s.lo));
+        if (yBot <= yTop) continue;
+        const r = document.createElementNS(NS, "rect");
+        r.setAttribute("x", 0); r.setAttribute("width", W);
+        r.setAttribute("y", yTop.toFixed(1));
+        r.setAttribute("height", (yBot - yTop).toFixed(1));
+        r.setAttribute("fill", b.color);
+        bands.appendChild(r);
+      }
+
+      /* Horizontal rules at the ends and middle. Three, not ten. */
+      for (const v of [s.lo, (s.lo + s.hi) / 2, s.hi]) {
+        const l = document.createElementNS(NS, "line");
+        l.setAttribute("x1", 0); l.setAttribute("x2", W);
+        l.setAttribute("y1", s.y(v).toFixed(1)); l.setAttribute("y2", s.y(v).toFixed(1));
+        l.setAttribute("class", "gridline");
+        grid.appendChild(l);
+      }
+
+      if (cfg.target != null && cfg.target >= s.lo && cfg.target <= s.hi) {
+        const l = document.createElementNS(NS, "line");
+        l.setAttribute("x1", 0); l.setAttribute("x2", W);
+        l.setAttribute("y1", s.y(cfg.target).toFixed(1));
+        l.setAttribute("y2", s.y(cfg.target).toFixed(1));
+        l.setAttribute("class", "target");
+        grid.appendChild(l);
+      }
+
+      series.forEach((ser, i) => {
+        const pts = (ser.points || []).filter((p) => p.value != null);
+        if (pts.length < 2) return;
+        const p = document.createElementNS(NS, "path");
+        p.setAttribute("d", path(pts, s));
+        p.setAttribute("fill", "none");
+        p.setAttribute("stroke", ser.color);
+        p.setAttribute("stroke-width", ser.width || 3);
+        p.setAttribute("stroke-linejoin", "round");
+        p.setAttribute("stroke-linecap", "round");
+        p.setAttribute("vector-effect", "non-scaling-stroke");
+        lines.appendChild(p);
+        const len = p.getTotalLength ? p.getTotalLength() : 1000;
+        p.style.strokeDasharray = len;
+        p.style.strokeDashoffset = len;
+        p.style.animation = `drawLine 1.6s ease ${(i * 0.1).toFixed(2)}s forwards`;
+      });
+
+      const fmt = cfg.axisFormat || MH.monthYear;
+      axis.appendChild(MH.el("span", "axis-tick", fmt(all[0].start)));
+      axis.appendChild(MH.el("span", "axis-tick", fmt(all[all.length - 1].start)));
+    };
+    return root;
+  };
+
+  /**
+   * The 30-day bar chart.
+   *
+   * Bars are coloured against the current goal rather than a fixed threshold,
+   * so changing the goal recolours the history — the design is explicit about
+   * that. Today's bar is hatched: it is a partial day and drawing it solid
+   * would read as a bad day rather than an unfinished one.
+   */
+  MH.barChart = (opts) => {
+    opts = opts || {};
+    const wrap = MH.el("div", "bars");
+    wrap.style.height = (opts.height || 230) + "px";
+    const axis = MH.el("div", "axis");
+    const holder = MH.el("div", "bars-row");
+    const root = MH.el("div");
+    MH.add(root, wrap, axis);
+    MH.add(wrap, holder);
+
+    root.update = (points, cfg) => {
+      cfg = cfg || {};
+      holder.textContent = "";
+      axis.textContent = "";
+      if (!points || !points.length) {
+        axis.appendChild(MH.el("span", "axis-tick", "no history yet"));
+        return;
+      }
+      const goal = cfg.goal || null;
+      const e = MH.extent(points);
+      const top = Math.max(e.max, goal || 0) * 1.05 || 1;
+      for (const p of points) {
+        const b = MH.el("i", "daybar");
+        b.style.height = Math.max(2, (p.value / top) * 100) + "%";
+        const met = goal ? p.value >= goal : false;
+        b.style.background = met ? "var(--green)" : "var(--green-light)";
+        if (p.partial) b.classList.add("partial");
+        b.title = `${p.day}: ${MH.group(p.value, 0)}` + (p.partial ? " so far today" : "");
+        MH.add(holder, b);
+      }
+      const d = (k) => {
+        const x = new Date(k);
+        return x.getDate() + " " + x.toLocaleString(undefined, { month: "short" });
+      };
+      axis.appendChild(MH.el("span", "axis-tick", d(points[0].start)));
+      axis.appendChild(MH.el("span", "axis-tick", d(points[points.length - 1].start)));
+    };
+    return root;
+  };
+
+  /** A sparkline for a vitals card — 26px tall, no axis, no scale. */
+  MH.sparkline = (color, height) => {
+    const svg = document.createElementNS(NS, "svg");
+    const H = height || 26, W = 200;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.setAttribute("class", "spark");
+    const p = document.createElementNS(NS, "path");
+    p.setAttribute("fill", "none");
+    p.setAttribute("stroke", color);
+    p.setAttribute("stroke-width", 2);
+    p.setAttribute("stroke-linejoin", "round");
+    p.setAttribute("stroke-linecap", "round");
+    p.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(p);
+    svg.update = (points) => {
+      const pts = (points || []).filter((x) => x.value != null);
+      if (pts.length < 2) { p.removeAttribute("d"); return; }
+      p.setAttribute("d", path(pts, scaler(pts, W, H - 4, {})));
+    };
+    return svg;
+  };
+
+  /** The four-segment clinical axis, shared by the BP card and the Heart tab. */
+  MH.BP_SEGMENTS = [
+    { key: "normal", label: "Normal", flex: 3, color: "#a8ddc7", from: 0, to: 120 },
+    { key: "elevated", label: "Elevated", flex: 1, color: "#f6dfa0", from: 120, to: 130 },
+    { key: "stage1", label: "Stage 1", flex: 2, color: "#eeb0a0", from: 130, to: 140 },
+    { key: "stage2", label: "Stage 2", flex: 2, color: "#c0334d", from: 140, to: 200 }
+  ];
+
+  /* ------------------------------------------------------------------ *
+   * Body, Heart and Movement
+   * ------------------------------------------------------------------ *
+   *
+   * The three history views. Each follows the same shape as Today: build once,
+   * update in place, and let a role that resolved to nothing produce a gap
+   * rather than an absence.
+   *
+   * Charts are the one thing here that cannot be drawn from `hass.states` —
+   * they need statistics, which is a websocket round trip. So each view
+   * exposes `series()` naming what it wants, the card fetches once on mount,
+   * and the view is handed the answer. A view never fetches for itself, or
+   * switching tabs twice would queue four round trips.
+   */
+
+  const hideIf2 = (n, h) => { n.style.display = h ? "none" : ""; };
+
+  /** Header row shared by every chart card: title, then a range selector. */
+  const chartHead = (title, ranges, onPick) => {
+    const head = MH.el("div", "head");
+    const picker = MH.el("div", "ranges");
+    const buttons = {};
+    for (const r of ranges) {
+      const b = MH.el("button", "range", r.label);
+      b.type = "button";
+      b.addEventListener("click", () => {
+        for (const k in buttons) buttons[k].setAttribute("aria-selected", k === r.key ? "true" : "false");
+        onPick(r);
+      });
+      buttons[r.key] = b;
+      MH.add(picker, b);
+    }
+    buttons[ranges[0].key].setAttribute("aria-selected", "true");
+    MH.add(head, MH.el("div", "title", title), picker);
+    return head;
+  };
+
+  const statTile = (label) => {
+    const t = MH.el("div", "tile");
+    const v = MH.el("div", "stat-value", "—");
+    MH.add(t, v, MH.el("div", "stat-caption", label));
+    t.set = (text) => { v.textContent = text; };
+    return t;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Body
+   * ------------------------------------------------------------------ */
+  MH.bodyView = () => {
+    const view = MH.el("div", "view");
+
+    /* --- current weight, the hero --- */
+    const hero = MH.el("div", "card hero");
+    const heroEyebrow = MH.el("div", "eyebrow", "");
+    const heroValue = MH.el("div", "metric hero-metric", "—");
+    const targetRow = MH.el("div", "between");
+    const targetLeft = MH.el("div", "support", "");
+    const targetRight = MH.el("div", "support", "");
+    MH.add(targetRow, targetLeft, targetRight);
+    const targetBar = MH.bar(0);
+    targetBar.style.height = "8px";
+    const heroNote = MH.el("div", "support", "");
+    const comp = MH.el("div", "grid2");
+    const tiles = {
+      fat_mass: statTile("Fat mass"), fat_free_mass: statTile("Fat-free mass"),
+      muscle_mass: statTile("Muscle"), bone_mass: statTile("Bone")
+    };
+    for (const k in tiles) MH.add(comp, tiles[k]);
+    MH.add(hero, heroEyebrow, heroValue, targetRow, targetBar, heroNote,
+           MH.el("div", "hr"), comp);
+
+    /* --- weight over time --- */
+    const chartCard = MH.el("div", "card");
+    const chart = MH.lineChart({ height: 230 });
+    let weightRange = { key: "90d", label: "90D", days: 90, mode: "mean" };
+    const chartLegend = MH.el("div", "support", "");
+    MH.add(chartCard, chartHead("Weight", [
+      { key: "90d", label: "90D", days: 90, mode: "mean" },
+      { key: "1y", label: "1Y", days: 365, mode: "monthly" },
+      { key: "all", label: "All", days: 6000, mode: "monthly" }
+    ], (r) => { weightRange = r; view.request(); }), chart, chartLegend);
+
+    /* --- body fat, and the three-series composition chart --- */
+    const fatCard = MH.el("div", "card");
+    const fatValue = MH.el("div", "metric", "—");
+    const fatChart = MH.lineChart({ height: 150 });
+    const fatHead = MH.el("div", "head");
+    MH.add(fatHead, MH.el("div", "title", "Body fat"), fatValue);
+    MH.add(fatCard, fatHead, fatChart);
+
+    const compCard = MH.el("div", "card");
+    const compChart = MH.lineChart({ height: 150 });
+    const compLegend = MH.el("div", "legend");
+    MH.add(compCard, MH.el("div", "title", "Fat, lean and muscle"), compChart, compLegend);
+
+    const r1 = MH.el("div", "row hero-left");
+    MH.add(r1, hero, chartCard);
+    const r2 = MH.el("div", "row two");
+    MH.add(r2, fatCard, compCard);
+    const note = MH.el("div", "note");
+    const noteText = MH.el("div", "note-text", "");
+    MH.add(note, MH.el("div", "eyebrow", "History"), noteText);
+    MH.add(view, r1, r2, note);
+
+    view.series = () => [
+      { key: "weight", role: "weight", days: weightRange.days, mode: weightRange.mode },
+      { key: "fat_ratio", role: "fat_ratio", days: 6000, mode: "monthly" },
+      { key: "fat_mass", role: "fat_mass", days: 6000, mode: "monthly" },
+      { key: "fat_free_mass", role: "fat_free_mass", days: 6000, mode: "monthly" },
+      { key: "muscle_mass", role: "muscle_mass", days: 6000, mode: "monthly" }
+    ];
+
+    view.update = (R, now, S) => {
+      S = S || {};
+      const w = R.weight;
+      const has = MH.readable(w);
+      hideIf2(hero, !w.entity_id);
+      if (has) {
+        const value = MH.valueIn(w);
+        heroEyebrow.textContent = ["Current", MH.ageLabel(w, now)].filter(Boolean).join(" · ");
+        heroValue.textContent = MH.group(value, 1) + " kg";
+        const goal = MH.readable(R.weight_goal) ? MH.valueIn(R.weight_goal) : null;
+        hideIf2(targetRow, goal == null);
+        hideIf2(targetBar, goal == null);
+        if (goal != null) {
+          targetLeft.textContent = "Target " + MH.group(goal, 1) + " kg";
+          targetRight.textContent = MH.group(value - goal, 1) + " kg to go";
+          /* Progress is how far from start to target, and there is no start —
+             so show the gap as a proportion of the current reading instead of
+             inventing a baseline the user never set. */
+          const frac = goal > 0 ? Math.max(0, Math.min(1, goal / value)) : 0;
+          targetBar.firstChild.style.width = (frac * 100).toFixed(1) + "%";
+        }
+        const t = MH.trend(S.weight);
+        heroNote.textContent = t && !t.flat
+          ? (t.up ? "Up " : "Down ") + MH.group(Math.abs(t.delta), 1) +
+            " kg over the last " + weightRange.label.toLowerCase()
+          : "";
+      } else {
+        heroEyebrow.textContent = "Current";
+        heroValue.textContent = "—";
+        heroNote.textContent = MH.gapReason(w, now);
+        hideIf2(targetRow, true); hideIf2(targetBar, true);
+      }
+
+      for (const k in tiles) {
+        const r = R[k];
+        tiles[k].set(MH.readable(r) ? MH.group(MH.valueIn(r), 2) + " kg" : "—");
+        tiles[k].style.opacity = MH.readable(r) ? "" : ".5";
+      }
+
+      const goal = MH.readable(R.weight_goal) ? MH.valueIn(R.weight_goal) : null;
+      chart.update([{ points: S.weight || [], color: "var(--blue)" }], { target: goal });
+      chartLegend.textContent = (S.weight || []).length
+        ? (S.weight.length + " points · " + weightRange.label) : "";
+
+      fatValue.textContent = MH.readable(R.fat_ratio)
+        ? MH.group(MH.valueIn(R.fat_ratio), 2) + " %" : "—";
+      fatChart.update([{ points: S.fat_ratio || [], color: "var(--red)" }], {});
+
+      compChart.update([
+        { points: S.fat_free_mass || [], color: "var(--gold)" },
+        { points: S.muscle_mass || [], color: "var(--coral)" },
+        { points: S.fat_mass || [], color: "var(--blue)" }
+      ], {});
+      compLegend.textContent = "";
+      for (const [k, c, label] of [["fat_free_mass", "var(--gold)", "Fat-free"],
+                                   ["muscle_mass", "var(--coral)", "Muscle"],
+                                   ["fat_mass", "var(--blue)", "Fat"]]) {
+        const g = MH.el("div", "legend-item");
+        const sw = MH.el("span", "swatch"); sw.style.background = c;
+        MH.add(g, sw, MH.el("span", "legend-label", label),
+               MH.el("span", "legend-value",
+                     MH.readable(R[k]) ? MH.group(MH.valueIn(R[k]), 1) : "—"));
+        MH.add(compLegend, g);
+      }
+
+      const e = MH.extent(S.weight);
+      const span = (S.fat_ratio || []).length ? MH.extent(S.fat_ratio) : null;
+      noteText.textContent = span && S.fat_ratio.length
+        ? "Monthly means back to " + MH.monthYear(S.fat_ratio[0].start) +
+          ". Gaps in the middle are real — they are months with no reading, not missing data."
+        : (e ? "Monthly means from the recorder's long-term statistics." : "");
+      hideIf2(note, !e && !span);
+    };
+    return view;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Heart
+   * ------------------------------------------------------------------ */
+  MH.heartView = () => {
+    const view = MH.el("div", "view");
+
+    const hero = MH.el("div", "card hero vital bad");
+    const heroHead = MH.el("div", "head");
+    const heroEyebrow = MH.el("div", "eyebrow", "Blood pressure");
+    const heroBadge = MH.el("span", "badge");
+    MH.add(heroHead, heroEyebrow, heroBadge);
+    const heroValue = MH.el("div", "metric hero-metric", "—");
+    const rangeBar = MH.el("div", "range-bar");
+    const rangeAxis = MH.el("div", "range-axis");
+    for (const s of MH.BP_SEGMENTS) {
+      const i = MH.el("i"); i.style.flex = s.flex; i.style.background = s.color;
+      MH.add(rangeBar, i);
+      const l = MH.el("span", "axis-tick", s.label); l.style.flex = s.flex;
+      MH.add(rangeAxis, l);
+    }
+    const heroBody = MH.el("div", "body",
+      "A single reading moves with the time of day, the cuff and the five " +
+      "minutes beforehand. The shape of a year is the thing worth reading.");
+    const pulseRow = MH.el("div", "between");
+    const pulseLeft = MH.el("div", "support", "");
+    const pulseRight = MH.el("div", "support", "");
+    MH.add(pulseRow, pulseLeft, pulseRight);
+    MH.add(hero, heroHead, heroValue, rangeBar, rangeAxis, heroBody,
+           MH.el("div", "hr"), pulseRow);
+
+    const chartCard = MH.el("div", "card");
+    const chart = MH.lineChart({ height: 230 });
+    let bpRange = { key: "1y", label: "1Y", days: 365, mode: "monthly" };
+    MH.add(chartCard, chartHead("Blood pressure", [
+      { key: "1y", label: "1Y", days: 365, mode: "monthly" },
+      { key: "5y", label: "5Y", days: 1825, mode: "monthly" },
+      { key: "all", label: "All", days: 6000, mode: "monthly" }
+    ], (r) => { bpRange = r; view.request(); }), chart);
+
+    const VITALS = [
+      { key: "resting_hr", title: "Resting heart rate", color: "var(--green)",
+        band: (v) => MH.hrBand(v), unit: "bpm", dp: 0 },
+      { key: "sleep_duration", title: "Sleep", color: "var(--blue)", unit: "h", dp: 1 },
+      { key: "spo2", title: "Blood oxygen", color: "var(--blue)",
+        band: (v) => MH.spo2Band(v), unit: "%", dp: 1 },
+      { key: "hrv", title: "HRV (SDNN)", color: "var(--gold)", unit: "ms", dp: 1 }
+    ];
+    const vitalCards = {};
+    const r2 = MH.el("div", "row four");
+    for (const spec of VITALS) {
+      const c = MH.el("div", "card vital");
+      const head = MH.el("div", "head");
+      const badge = MH.el("span", "badge");
+      MH.add(head, MH.el("div", "eyebrow", spec.title), badge);
+      const value = MH.el("div", "metric", "—");
+      const spark = MH.sparkline(spec.color);
+      const support = MH.el("div", "support", "");
+      MH.add(c, head, value, spark, support);
+      vitalCards[spec.key] = { card: c, badge, value, spark, support, spec };
+      MH.add(r2, c);
+    }
+
+    const r1 = MH.el("div", "row hero-left");
+    MH.add(r1, hero, chartCard);
+    MH.add(view, r1, r2);
+
+    view.series = () => [
+      { key: "systolic", role: "systolic", days: bpRange.days, mode: "monthly" },
+      { key: "diastolic", role: "diastolic", days: bpRange.days, mode: "monthly" },
+      { key: "resting_hr", role: "resting_hr", days: 365, mode: "mean" },
+      { key: "sleep_duration", role: "sleep_duration", days: 365, mode: "mean" },
+      { key: "spo2", role: "spo2", days: 365, mode: "mean" },
+      { key: "hrv", role: "hrv", days: 365, mode: "mean" }
+    ];
+
+    view.update = (R, now, S) => {
+      S = S || {};
+      const s = R.systolic, d = R.diastolic;
+      const ok = MH.readable(s) && MH.readable(d);
+      hideIf2(hero, !s.entity_id && !d.entity_id);
+      if (ok) {
+        const sys = MH.valueIn(s), dia = MH.valueIn(d);
+        const band = MH.bpBand(sys, dia);
+        hero.className = "card hero vital " + band.tone;
+        heroEyebrow.textContent = ["Blood pressure", MH.ageLabel(s, now)].filter(Boolean).join(" · ");
+        heroValue.textContent = MH.group(sys, 0) + "/" + MH.group(dia, 0);
+        heroValue.style.color = band.tone === "bad" ? "var(--red-text)" : "";
+        heroBadge.className = "badge " + band.tone;
+        heroBadge.textContent = band.label;
+        for (const i of rangeBar.children) i.style.opacity = ".35";
+        const idx = MH.BP_SEGMENTS.findIndex((x) => x.key === band.key);
+        if (idx >= 0) rangeBar.children[idx].style.opacity = "1";
+      } else {
+        hero.className = "card hero vital gap";
+        heroValue.textContent = "—";
+        heroBadge.className = "badge gap"; heroBadge.textContent = "Gap";
+        heroEyebrow.textContent = "Blood pressure";
+      }
+      pulseLeft.textContent = MH.readable(R.cuff_pulse)
+        ? "Resting pulse " + MH.group(MH.valueIn(R.cuff_pulse), 0) + " bpm" : "";
+      /* A mean over the window, not the latest bucket — the label says mean
+         and the last monthly point is not one. */
+      const avg = (pts) => {
+        const vs = (pts || []).map((p) => p.value).filter((x) => x != null);
+        return vs.length ? vs.reduce((a, b) => a + b, 0) / vs.length : null;
+      };
+      const ms = avg(S.systolic), md = avg(S.diastolic);
+      pulseRight.textContent = ms != null && md != null
+        ? bpRange.label + " mean " + MH.group(ms, 0) + "/" + MH.group(md, 0) : "";
+
+      chart.update([
+        { points: S.systolic || [], color: "var(--red)" },
+        { points: S.diastolic || [], color: "var(--gold)" }
+      ], { bands: MH.BP_SEGMENTS.map((b) => ({ from: b.from, to: b.to, color: b.color + "33" })) });
+
+      for (const key in vitalCards) {
+        const v = vitalCards[key], r = R[key], spec = v.spec;
+        const good = MH.readable(r);
+        v.card.className = "card vital" + (good ? "" : " gap");
+        if (good) {
+          const val = MH.valueIn(r);
+          const band = spec.band ? spec.band(val) : null;
+          v.card.classList.add(band ? band.tone : "info");
+          v.value.textContent = MH.group(val, spec.dp) + " " + spec.unit;
+          v.badge.className = "badge " + (band ? band.tone : "info");
+          v.badge.textContent = band ? band.label : "";
+          hideIf2(v.badge, !band);
+          const pts = S[key] || [];
+          v.spark.update(pts);
+          hideIf2(v.spark, pts.length < 2);
+          const e = MH.extent(pts);
+          v.support.textContent = e && e.n > 2
+            ? "Range " + MH.group(e.min, spec.dp) + "–" + MH.group(e.max, spec.dp) +
+              " over " + e.n + " days"
+            : (MH.ageLabel(r, now) || "");
+        } else {
+          v.value.textContent = "—";
+          v.badge.className = "badge gap"; v.badge.textContent = "Gap";
+          hideIf2(v.badge, false);
+          hideIf2(v.spark, true);
+          v.support.textContent = MH.gapReason(r, now);
+        }
+      }
+    };
+    return view;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Movement
+   * ------------------------------------------------------------------ */
+  MH.movementView = (config) => {
+    const view = MH.el("div", "view");
+
+    const hero = MH.el("div", "card hero vital good");
+    const heroEyebrow = MH.el("div", "eyebrow", "Steps today");
+    const heroValue = MH.el("div", "metric hero-metric", "—");
+    const heroBar = MH.bar(0); heroBar.style.height = "8px";
+    const heroNote = MH.el("div", "support", "");
+    const grid = MH.el("div", "grid2");
+    const mTiles = { avg: statTile("7-day average"), best: statTile("Best in 30 days"),
+                     climbed: statTile("Climbed today"), energy: statTile("Active calories") };
+    for (const k in mTiles) MH.add(grid, mTiles[k]);
+    MH.add(hero, heroEyebrow, heroValue, heroBar, heroNote, MH.el("div", "hr"), grid);
+
+    const barsCard = MH.el("div", "card");
+    const bars = MH.barChart({ height: 230 });
+    const barsLegend = MH.el("div", "legend");
+    for (const [c, label] of [["var(--green)", "Goal met"], ["var(--green-light)", "Under goal"]]) {
+      const g = MH.el("div", "legend-item");
+      const sw = MH.el("span", "swatch"); sw.style.background = c;
+      MH.add(g, sw, MH.el("span", "legend-label", label));
+      MH.add(barsLegend, g);
+    }
+    MH.add(barsCard, MH.el("div", "head"), bars, barsLegend);
+    barsCard.firstChild.appendChild(MH.el("div", "title", "Steps · last 30 days"));
+    const barsNote = MH.el("div", "support", "");
+    barsCard.firstChild.appendChild(barsNote);
+
+    const treadCard = MH.el("div", "card");
+    const treadHead = MH.el("div", "head");
+    const treadChip = MH.el("div", "chip");
+    const treadDot = MH.el("span", "dot green pulse");
+    const treadText = MH.el("span", "chip-text", "");
+    MH.add(treadChip, treadDot, treadText);
+    MH.add(treadHead, MH.el("div", "title", "Treadmill"), treadChip);
+    const treadGrid = MH.el("div", "tiles");
+    const tTiles = { walks: statTile("Walks this week"), time: statTile("Time walked"),
+                     dist: statTile("Distance this week"), cal: statTile("Calories this week"),
+                     month: statTile("Distance this month") };
+    for (const k in tTiles) MH.add(treadGrid, tTiles[k]);
+    MH.add(treadCard, treadHead, treadGrid);
+
+    const r1 = MH.el("div", "row hero-left");
+    MH.add(r1, hero, barsCard);
+    MH.add(view, r1, treadCard);
+
+    view.series = () => [
+      { key: "steps", role: "steps", days: 30, mode: "daily_total" },
+      { key: "active_energy", role: "active_energy", days: 30, mode: "daily_total" }
+    ];
+
+    view.update = (R, now, S) => {
+      S = S || {};
+      const st = R.steps;
+      const ok = MH.readable(st);
+      hideIf2(hero, !st.entity_id);
+      const goal = MH.readable(R.step_goal) ? MH.valueIn(R.step_goal)
+                 : ((config || {}).step_goal || 10000);
+      if (ok) {
+        const v = MH.valueIn(st);
+        const p = MH.progress(v, goal);
+        heroEyebrow.textContent = ["Steps today", MH.ageLabel(st, now)].filter(Boolean).join(" · ");
+        heroValue.textContent = MH.group(v, 0);
+        heroBar.firstChild.style.width = p.pct + "%";
+        const dist = MH.readable(R.distance) ? MH.valueIn(R.distance) : null;
+        heroNote.textContent = [
+          p.met ? MH.group(v - goal, 0) + " over " + MH.group(goal, 0)
+                : MH.group(goal - v, 0) + " to " + MH.group(goal, 0),
+          dist != null ? MH.group(dist, 1) + " km walked" : null
+        ].filter(Boolean).join(" · ");
+      } else {
+        heroValue.textContent = "—";
+        heroNote.textContent = MH.gapReason(st, now);
+      }
+
+      /* The 30-day series, and the four tiles that read off it. */
+      const pts = (S.steps || []).filter((p) => !p.partial);
+      const e = MH.extent(pts);
+      const last7 = pts.slice(-7);
+      mTiles.avg.set(last7.length
+        ? MH.group(last7.reduce((n, p) => n + p.value, 0) / last7.length, 0) : "—");
+      mTiles.best.set(e ? MH.group(e.max, 0) : "—");
+      mTiles.climbed.set(MH.readable(R.flights_climbed)
+        ? MH.group(MH.valueIn(R.flights_climbed), 0) + " m" : "—");
+      mTiles.energy.set(MH.readable(R.active_energy)
+        ? MH.group(MH.valueIn(R.active_energy), 0) : "—");
+
+      bars.update(S.steps || [], { goal });
+      barsNote.textContent = (S.steps || []).length
+        ? "Daily closing totals · goal " + MH.group(goal, 0) : "";
+
+      const keys = ["treadmill_walks_week", "treadmill_time_week", "treadmill_distance_week",
+                    "treadmill_calories_week", "treadmill_distance_month"];
+      const anyTread = keys.some((k) => MH.showable(R[k])) || MH.showable(R.treadmill_state);
+      hideIf2(treadCard, !anyTread);
+      const state = MH.showable(R.treadmill_state) ? String(R.treadmill_state.value) : null;
+      const active = state && /run|active|walking|workout/i.test(state);
+      treadText.textContent = state ? (active ? "Active" : "Idle · ready") : "";
+      treadDot.style.opacity = active ? "" : ".55";
+      const put = (tile, key, fmt) => {
+        const r = R[key];
+        tile.set(MH.showable(r) ? fmt(MH.valueIn(r)) : "—");
+        tile.style.opacity = MH.readable(r) ? "" : (MH.showable(r) ? ".5" : ".5");
+      };
+      put(tTiles.walks, "treadmill_walks_week", (v) => MH.group(v, 0));
+      put(tTiles.time, "treadmill_time_week", (v) => MH.group(v, 0) + " min");
+      put(tTiles.dist, "treadmill_distance_week", (v) => MH.group(v, 1) + " km");
+      put(tTiles.cal, "treadmill_calories_week", (v) => MH.group(v, 0));
+      put(tTiles.month, "treadmill_distance_month", (v) => MH.group(v, 1) + " km");
+    };
+    return view;
+  };
 
   /* ------------------------------------------------------------------ *
    * Exit

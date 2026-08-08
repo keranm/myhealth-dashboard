@@ -29,9 +29,10 @@
   };
   try {
     const q = new URLSearchParams(location.search);
-    const [statesArr, stats] = await Promise.all([
+    const [statesArr, stats, series] = await Promise.all([
       fetch("states.json").then((r) => r.json()),
-      fetch("stats.json").then((r) => r.json()).catch(() => ({}))
+      fetch("stats.json").then((r) => r.json()).catch(() => ({})),
+      fetch("series.json").then((r) => r.json()).catch(() => ({}))
     ]);
 
     /* ?only=withings keeps only entities whose id matches, which is how the
@@ -48,12 +49,18 @@
     const hass = {
       states,
       callWS: async (msg) => {
-        if (msg.type === "recorder/statistics_during_period") {
-          const out = {};
-          for (const id of msg.statistic_ids || []) if (stats[id]) out[id] = stats[id];
-          return out;
+        if (msg.type !== "recorder/statistics_during_period") return {};
+        const out = {};
+        for (const id of msg.statistic_ids || []) {
+          /* Chart queries are keyed by exactly what the view asked for, so the
+             preview answers the query that was made rather than the one it
+             guessed. The freshness pass (hourly means over every entity) falls
+             back to the flat stats.json dump. */
+          const key = id + "|" + msg.period + "|" + (msg.types || []).join(",");
+          if (series[key]) out[id] = series[key];
+          else if (stats[id]) out[id] = stats[id];
         }
-        return {};
+        return out;
       }
     };
 
@@ -68,9 +75,16 @@
     setTimeout(() => { document.title = "ready"; }, 900);
   } catch (e) { fail(e); }
 })();
-window.addEventListener("error", (e) => {
+const surface = (what) => {
   const box = document.getElementById("err");
   box.hidden = false;
-  box.textContent += "\n" + e.message + "  @" + e.filename + ":" + e.lineno;
-});
+  box.textContent += "\n" + what;
+};
+window.addEventListener("error", (e) =>
+  surface(e.message + "  @" + e.filename + ":" + e.lineno));
+/* Views are updated inside a .then(), so anything they throw is an unhandled
+   rejection rather than an error event — and would otherwise show up only as
+   a chart that is silently empty. */
+window.addEventListener("unhandledrejection", (e) =>
+  surface("unhandled rejection: " + (e.reason && e.reason.stack || e.reason)));
 </script>

@@ -47,3 +47,29 @@ w.close()
 (HERE / "stats.json").write_text(json.dumps(stats))
 print(f"wrote stats.json — {len(stats)} of {len(ids)} resolved entities have "
       f"statistics over {DAYS} days")
+
+# ---------------------------------------------------------------------------
+# Chart series, so tools/preview.html can draw the history views offline.
+#
+# Keyed exactly as the card asks for them — statistic id, period and the types
+# requested — because the preview's fake `callWS` matches on that key and must
+# not have to guess which query a view meant.
+# ---------------------------------------------------------------------------
+series = {}
+w2 = WS()
+plans = [("month", ["mean", "min", "max"], 6000),
+         ("day", ["mean", "min", "max"], 365),
+         ("hour", ["max"], 30)]
+for period, types, days in plans:
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
+    for sid in ids:
+        try:
+            got = w2.cmd(type="recorder/statistics_during_period", start_time=since,
+                         statistic_ids=[sid], period=period, types=types)
+        except Exception:
+            continue
+        if got.get(sid):
+            series[f"{sid}|{period}|{','.join(types)}"] = got[sid]
+w2.close()
+(HERE / "series.json").write_text(json.dumps(series))
+print(f"wrote series.json — {len(series)} series across {len(plans)} resolutions")
