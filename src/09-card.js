@@ -214,6 +214,11 @@
       }
       if (this._tabButtons[this._tab].style.display === "none") this._select("today");
 
+      /* The views are otherwise pure — resolution in, DOM out. The one thing
+         that needs `hass` is the Ask box, which calls a service, so it is
+         handed over here rather than passed through three signatures that have
+         no other use for it. */
+      MH.hass = this._hass;
       this._views[this._tab].update(this._resolved, now, this._series[this._tab] || {});
       this._paintSync(now);
       this._seriesFor(this._tab, false);

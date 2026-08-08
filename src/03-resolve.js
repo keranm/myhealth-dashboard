@@ -20,7 +20,11 @@
    * real weight, which is exactly why every guess is reported and overridable.
    */
   const score = (ent, role) => {
-    if (!READABLE.test(ent.entity_id)) return 0;
+    /* Most roles are readings, and a reading can only come from a domain that
+       holds one — `automation.stride_bp_reminder` contains the token "bp" and
+       must never resolve as a blood pressure. A few roles are *actions*
+       instead, and those name the domain they want. */
+    if (!(role.domain || READABLE).test(ent.entity_id)) return 0;
     const m = role.match || {};
     const a = ent.attributes || {};
     const toks = tokens(ent.entity_id);

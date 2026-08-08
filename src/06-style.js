@@ -365,6 +365,56 @@ ${DARK_CSS}
 }
 @keyframes drawLine { to { stroke-dashoffset: 0; } }
 
+/* --- phones ------------------------------------------------------- *
+   The design is a 1360px desktop page and says so, but this is Home
+   Assistant: most people open it on a phone. Two things made the whole page
+   scroll sideways rather than merely look cramped, and both are min-content
+   widths that no amount of max-width would fix.
+
+   The tab bar: four tabs plus a SYNCED chip laid out with space-between have
+   a min-content width well over 390px, and a flex row does not shrink below
+   that — so the bar pushed the page wider than the viewport and every card
+   was clipped at the right edge.
+
+   The coach card: a 140px ring and a text column side by side, with the gap,
+   leaves under 200px for a 25px headline. It stacks here instead. */
+@media (max-width: 640px) {
+  .bar { height: 52px; }
+  .bar-inner { padding: 0 14px; gap: 10px; }
+  /* Scroll the tabs rather than squeezing them: a four-way choice that has to
+     stay readable is a better candidate for a swipe than for 11px type. */
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { font-size: 14px; padding: 0 12px; flex: none; }
+  /* The dot survives; the words do not fit and are not load-bearing. */
+  .sync-text { display: none; }
+
+  .view { padding: 16px 14px 40px; gap: 12px; }
+  .row { gap: 12px; }
+  .card { padding: 16px; border-radius: 12px; }
+  .card.hero { padding: 18px 16px; border-radius: 14px; }
+
+  .coach { flex-direction: column; gap: 16px; align-items: stretch; }
+  .coach .ring { align-self: center; width: 132px; height: 132px; }
+  .coach-main { max-width: none; }
+  .headline { font-size: 21px; line-height: 1.25; }
+  .body { font-size: 14px; }
+
+  .hero-metric { font-size: 40px; }
+  .metric { font-size: 28px; }
+
+  /* Both of these are label-then-control rows that only work side by side. */
+  .ask { flex-direction: column; align-items: stretch; }
+  .next { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .next-text { flex: none; }
+
+  .stats { gap: 16px 22px; }
+  .grid2 { gap: 12px 16px; }
+  .entry { grid-template-columns: 1fr; gap: 2px; }
+  .legend { gap: 10px 14px; }
+  .range-axis { display: none; }
+}
+
 /* --- motion ------------------------------------------------------- */
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(10px); }

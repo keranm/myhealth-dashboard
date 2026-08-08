@@ -1,5 +1,9 @@
 <!doctype html>
 <meta charset="utf-8">
+<!-- Home Assistant's frontend sets this, so the preview must too. Without it a
+     phone lays the page out at 980px and scales it down, which hides every
+     narrow-viewport problem the card has and invents a few it does not. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>myHealth Dashboard — preview</title>
 <!--
   Renders the built card against a real states dump, outside Home Assistant.
@@ -48,6 +52,31 @@
 
     const hass = {
       states,
+      /* Ask the coach is the one thing on the page that writes. The preview
+         must not call a real script, but it must not be missing either — a
+         `callService` that is simply undefined turns the Ask button into a
+         TypeError, which is a worse lie than a stub. This one answers the way
+         the real coach does: by replacing the retained message a moment later. */
+      callService: async (domain, service, data) => {
+        console.log("callService", domain, service, data);
+        await new Promise((r) => setTimeout(r, 600));
+        const id = "sensor.stride_coach";
+        if (!states[id]) return;
+        const next = Object.assign({}, states, {
+          [id]: Object.assign({}, states[id], {
+            state: "A preview answer",
+            attributes: Object.assign({}, states[id].attributes, {
+              headline: "A preview answer",
+              body: "This is tools/preview.html, so nothing was asked of the "
+                  + "real coach. On the instance the reply lands here.",
+              kind: "question", source: "preview"
+            })
+          })
+        });
+        Object.assign(states, next);
+        card.hass = Object.assign({}, hass, { states: Object.assign({}, states) });
+      },
+
       callWS: async (msg) => {
         if (msg.type !== "recorder/statistics_during_period") return {};
         const out = {};
@@ -73,6 +102,35 @@
     /* The statistics pass is async; give it a moment, then mark the page ready
        so a screenshot waits for the real ages rather than the first paint. */
     setTimeout(() => { document.title = "ready"; }, 900);
+
+    /* ?measure=1 names whatever is making the page wider than the viewport.
+       Guessing at this from a screenshot is how an afternoon disappears: the
+       symptom is that *everything* is clipped, which points at every element
+       equally and at none of them in particular. */
+    if (q.get("measure")) {
+      setTimeout(() => {
+        const vw = document.documentElement.clientWidth;
+        const bad = [];
+        const walk = (root) => {
+          for (const n of root.querySelectorAll("*")) {
+            const r = n.getBoundingClientRect();
+            if (r.right > vw + 1 || r.width > vw + 1) {
+              bad.push(`${n.tagName.toLowerCase()}.${(n.className || "").toString().split(" ")[0]}` +
+                       `  w=${Math.round(r.width)}  right=${Math.round(r.right)}`);
+            }
+            if (n.shadowRoot) walk(n.shadowRoot);
+          }
+        };
+        walk(document);
+        if (card.shadowRoot) walk(card.shadowRoot);
+        const box = document.getElementById("err");
+        box.hidden = false;
+        box.style.color = bad.length ? "#a02940" : "#0f6d52";
+        box.textContent = `viewport ${vw}px · document scrollWidth ` +
+          `${document.documentElement.scrollWidth}px\n` +
+          (bad.length ? bad.slice(0, 14).join("\n") : "nothing overflows");
+      }, 1400);
+    }
 
     /* ?churn=N re-sets hass N times with an unrelated entity changing, which
        is what a busy instance does all day. It exists because the charts once

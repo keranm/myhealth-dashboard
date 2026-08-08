@@ -55,13 +55,56 @@
     const input = el("input");
     input.type = "text";
     input.placeholder = "Ask the coach — why is my resting pulse lower this week?";
-    input.disabled = true;
     const askBtn = el("button", "btn dark", "Ask");
-    askBtn.disabled = true;
-    askBtn.title = "Actions that write back arrive with the write path";
+    const askNote = el("div", "support ask-note", "");
     add(ask, input, askBtn);
 
-    add(main, legend, el("div", "hr"), eyebrow, headline, body, next, ask);
+    /* The one write on the page.
+     *
+     * The coach script assembles its own context and publishes the answer to
+     * the same retained topic the card already reads, so there is nothing to
+     * poll and no second channel: the reply arrives as an ordinary state
+     * change and lands in the card above. `silent` is set because the push
+     * notification exists for when you are *not* looking at this, and you
+     * plainly are. */
+    let asking = false;
+    const submit = () => {
+      const q = input.value.trim();
+      const script = card._askEntity;
+      if (!q || !script || asking || !MH.hass) return;
+      asking = true;
+      askBtn.textContent = "Asking…";
+      askBtn.disabled = true;
+      input.disabled = true;
+      askNote.textContent = "";
+
+      const [domain, service] = script.split(".");
+      Promise.resolve(MH.hass.callService(domain, service, {
+        kind: "question",
+        task: "Keran has asked you this directly, on the dashboard. Answer it "
+            + "in your own voice, using what you know below where it is "
+            + "relevant and saying plainly when it is not:\n\n" + q,
+        silent: true
+      })).then(() => {
+        input.value = "";
+        askNote.textContent = "Asked. The reply replaces the message above when "
+                            + "it arrives — usually a few seconds.";
+      }).catch((e) => {
+        /* A failed ask has to say so. Clearing the box and showing nothing
+           would be indistinguishable from a coach that had nothing to add. */
+        askNote.textContent = "Could not ask the coach: " + (e && e.message ? e.message : e);
+      }).then(() => {
+        asking = false;
+        askBtn.textContent = "Ask";
+        askBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+      });
+    };
+    askBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+
+    add(main, legend, el("div", "hr"), eyebrow, headline, body, next, ask, askNote);
     add(wrap, rings, main);
     add(card, wrap);
 
@@ -104,7 +147,14 @@
       const suggestion = a.next || a.suggestion || a.action || null;
       hideIf(next, !suggestion);
       nextText.textContent = suggestion || "";
-      hideIf(ask, !has);
+
+      /* The Ask box needs somewhere to send the question. No coach script
+         resolved means no box — not a disabled one, which would invite a
+         press that could never work. */
+      const askable = R.coach_ask;
+      card._askEntity = askable && askable.entity_id ? askable.entity_id : null;
+      hideIf(ask, !has || !card._askEntity);
+      hideIf(askNote, !askNote.textContent);
     };
     return card;
   };

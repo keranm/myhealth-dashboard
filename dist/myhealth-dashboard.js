@@ -91,6 +91,8 @@
    *            coherence pass in 03-resolve.js.
    *   timestamp  the state is itself a time, so it is its own measurement age
    *            and needs none of the machinery in 04-freshness.js.
+   *   domain   a regex the entity id must match, for roles that are actions
+   *            rather than readings. Defaults to the readable domains.
    *   match    discovery hints — see 03-resolve.js for how they are scored
    *              device_class  strongest signal, when the integration sets one
    *              units         medium
@@ -269,6 +271,17 @@
      * absent until then. */
     { key: "coach_message", label: "Coach", tab: "today", unit: null, window: 2,
       match: { any: [["coach"]], not: ["personality", "script"] } },
+
+    /* The one role that is a verb rather than a reading: the script that asks
+       the coach a question. Domain-restricted to `script`, which is why
+       `domain` exists at all — every other role would be actively harmed by
+       resolving one.
+
+       Absent is the ordinary case. Nothing about this dashboard requires a
+       coach, and an instance without one simply has no Ask box. */
+    { key: "coach_ask", label: "Ask the coach", tab: "today", unit: null, window: null,
+      domain: /^script\./,
+      match: { any: [["coach"]], not: ["personality"] } },
     { key: "medication_logged", label: "Medication logged today", tab: "today", unit: null, window: 1,
       match: { any: [["medication", "logged"], ["medication"]] } },
 
@@ -306,7 +319,11 @@
    * real weight, which is exactly why every guess is reported and overridable.
    */
   const score = (ent, role) => {
-    if (!READABLE.test(ent.entity_id)) return 0;
+    /* Most roles are readings, and a reading can only come from a domain that
+       holds one — `automation.stride_bp_reminder` contains the token "bp" and
+       must never resolve as a blood pressure. A few roles are *actions*
+       instead, and those name the domain they want. */
+    if (!(role.domain || READABLE).test(ent.entity_id)) return 0;
     const m = role.match || {};
     const a = ent.attributes || {};
     const toks = tokens(ent.entity_id);
@@ -1406,6 +1423,56 @@ ${DARK_CSS}
 }
 @keyframes drawLine { to { stroke-dashoffset: 0; } }
 
+/* --- phones ------------------------------------------------------- *
+   The design is a 1360px desktop page and says so, but this is Home
+   Assistant: most people open it on a phone. Two things made the whole page
+   scroll sideways rather than merely look cramped, and both are min-content
+   widths that no amount of max-width would fix.
+
+   The tab bar: four tabs plus a SYNCED chip laid out with space-between have
+   a min-content width well over 390px, and a flex row does not shrink below
+   that — so the bar pushed the page wider than the viewport and every card
+   was clipped at the right edge.
+
+   The coach card: a 140px ring and a text column side by side, with the gap,
+   leaves under 200px for a 25px headline. It stacks here instead. */
+@media (max-width: 640px) {
+  .bar { height: 52px; }
+  .bar-inner { padding: 0 14px; gap: 10px; }
+  /* Scroll the tabs rather than squeezing them: a four-way choice that has to
+     stay readable is a better candidate for a swipe than for 11px type. */
+  .tabs { overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { font-size: 14px; padding: 0 12px; flex: none; }
+  /* The dot survives; the words do not fit and are not load-bearing. */
+  .sync-text { display: none; }
+
+  .view { padding: 16px 14px 40px; gap: 12px; }
+  .row { gap: 12px; }
+  .card { padding: 16px; border-radius: 12px; }
+  .card.hero { padding: 18px 16px; border-radius: 14px; }
+
+  .coach { flex-direction: column; gap: 16px; align-items: stretch; }
+  .coach .ring { align-self: center; width: 132px; height: 132px; }
+  .coach-main { max-width: none; }
+  .headline { font-size: 21px; line-height: 1.25; }
+  .body { font-size: 14px; }
+
+  .hero-metric { font-size: 40px; }
+  .metric { font-size: 28px; }
+
+  /* Both of these are label-then-control rows that only work side by side. */
+  .ask { flex-direction: column; align-items: stretch; }
+  .next { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .next-text { flex: none; }
+
+  .stats { gap: 16px 22px; }
+  .grid2 { gap: 12px 16px; }
+  .entry { grid-template-columns: 1fr; gap: 2px; }
+  .legend { gap: 10px 14px; }
+  .range-axis { display: none; }
+}
+
 /* --- motion ------------------------------------------------------- */
 @keyframes cardIn {
   from { opacity: 0; transform: translateY(10px); }
@@ -1601,13 +1668,56 @@ ${DARK_CSS}
     const input = el("input");
     input.type = "text";
     input.placeholder = "Ask the coach — why is my resting pulse lower this week?";
-    input.disabled = true;
     const askBtn = el("button", "btn dark", "Ask");
-    askBtn.disabled = true;
-    askBtn.title = "Actions that write back arrive with the write path";
+    const askNote = el("div", "support ask-note", "");
     add(ask, input, askBtn);
 
-    add(main, legend, el("div", "hr"), eyebrow, headline, body, next, ask);
+    /* The one write on the page.
+     *
+     * The coach script assembles its own context and publishes the answer to
+     * the same retained topic the card already reads, so there is nothing to
+     * poll and no second channel: the reply arrives as an ordinary state
+     * change and lands in the card above. `silent` is set because the push
+     * notification exists for when you are *not* looking at this, and you
+     * plainly are. */
+    let asking = false;
+    const submit = () => {
+      const q = input.value.trim();
+      const script = card._askEntity;
+      if (!q || !script || asking || !MH.hass) return;
+      asking = true;
+      askBtn.textContent = "Asking…";
+      askBtn.disabled = true;
+      input.disabled = true;
+      askNote.textContent = "";
+
+      const [domain, service] = script.split(".");
+      Promise.resolve(MH.hass.callService(domain, service, {
+        kind: "question",
+        task: "Keran has asked you this directly, on the dashboard. Answer it "
+            + "in your own voice, using what you know below where it is "
+            + "relevant and saying plainly when it is not:\n\n" + q,
+        silent: true
+      })).then(() => {
+        input.value = "";
+        askNote.textContent = "Asked. The reply replaces the message above when "
+                            + "it arrives — usually a few seconds.";
+      }).catch((e) => {
+        /* A failed ask has to say so. Clearing the box and showing nothing
+           would be indistinguishable from a coach that had nothing to add. */
+        askNote.textContent = "Could not ask the coach: " + (e && e.message ? e.message : e);
+      }).then(() => {
+        asking = false;
+        askBtn.textContent = "Ask";
+        askBtn.disabled = false;
+        input.disabled = false;
+        input.focus();
+      });
+    };
+    askBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+
+    add(main, legend, el("div", "hr"), eyebrow, headline, body, next, ask, askNote);
     add(wrap, rings, main);
     add(card, wrap);
 
@@ -1650,7 +1760,14 @@ ${DARK_CSS}
       const suggestion = a.next || a.suggestion || a.action || null;
       hideIf(next, !suggestion);
       nextText.textContent = suggestion || "";
-      hideIf(ask, !has);
+
+      /* The Ask box needs somewhere to send the question. No coach script
+         resolved means no box — not a disabled one, which would invite a
+         press that could never work. */
+      const askable = R.coach_ask;
+      card._askEntity = askable && askable.entity_id ? askable.entity_id : null;
+      hideIf(ask, !has || !card._askEntity);
+      hideIf(askNote, !askNote.textContent);
     };
     return card;
   };
@@ -2199,6 +2316,11 @@ ${DARK_CSS}
       }
       if (this._tabButtons[this._tab].style.display === "none") this._select("today");
 
+      /* The views are otherwise pure — resolution in, DOM out. The one thing
+         that needs `hass` is the Ask box, which calls a service, so it is
+         handed over here rather than passed through three signatures that have
+         no other use for it. */
+      MH.hass = this._hass;
       this._views[this._tab].update(this._resolved, now, this._series[this._tab] || {});
       this._paintSync(now);
       this._seriesFor(this._tab, false);

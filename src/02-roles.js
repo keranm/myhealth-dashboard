@@ -22,6 +22,8 @@
    *            coherence pass in 03-resolve.js.
    *   timestamp  the state is itself a time, so it is its own measurement age
    *            and needs none of the machinery in 04-freshness.js.
+   *   domain   a regex the entity id must match, for roles that are actions
+   *            rather than readings. Defaults to the readable domains.
    *   match    discovery hints — see 03-resolve.js for how they are scored
    *              device_class  strongest signal, when the integration sets one
    *              units         medium
@@ -200,6 +202,17 @@
      * absent until then. */
     { key: "coach_message", label: "Coach", tab: "today", unit: null, window: 2,
       match: { any: [["coach"]], not: ["personality", "script"] } },
+
+    /* The one role that is a verb rather than a reading: the script that asks
+       the coach a question. Domain-restricted to `script`, which is why
+       `domain` exists at all — every other role would be actively harmed by
+       resolving one.
+
+       Absent is the ordinary case. Nothing about this dashboard requires a
+       coach, and an instance without one simply has no Ask box. */
+    { key: "coach_ask", label: "Ask the coach", tab: "today", unit: null, window: null,
+      domain: /^script\./,
+      match: { any: [["coach"]], not: ["personality"] } },
     { key: "medication_logged", label: "Medication logged today", tab: "today", unit: null, window: 1,
       match: { any: [["medication", "logged"], ["medication"]] } },
 
