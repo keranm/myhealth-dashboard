@@ -1371,7 +1371,6 @@ ${DARK_CSS}
 .card.med-due .med-title { color: var(--amber-ink); }
 .card.med-due .med-body { color: var(--amber-ink-2); font-size: 14px; line-height: 1.6; }
 .card.med-due .eyebrow { color: var(--amber-deep); }
-.med-actions { display: flex; gap: 10px; }
 
 /* --- list --------------------------------------------------------- */
 .entry {
