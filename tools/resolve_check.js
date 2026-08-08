@@ -263,6 +263,201 @@ console.log("assertions");
         r.medication_logged.how === "absent" && r.medication_logged.entity_id === null);
 }
 
+/* ---------------------------------------------------------------- *
+ * Freshness from statistics — 04-freshness.js
+ * ---------------------------------------------------------------- */
+{
+  const hour = 3600000;
+  const bucket = (hoursAgo, mean) => ({ start: NOW - hoursAgo * hour, mean });
+
+  /* The ordinary case: the value moved four days ago and has been held since.
+     The measurement is the first bucket carrying the new value, not the last
+     one carrying the old — that one predates the change. */
+  const series = [];
+  for (let h = 240; h > 96; h--) series.push(bucket(h, 72.4));
+  for (let h = 96; h >= 0; h--) series.push(bucket(h, 71.2));
+  const got = MH.ageFromStatistics(series, NOW);
+  check("statistics recover the time a value last changed", got && got.via === "statistics",
+        JSON.stringify(got));
+  check("the measurement is the first bucket holding the current value",
+        got && Math.round((NOW - got.at) / 3600000) === 96,
+        got ? String(Math.round((NOW - got.at) / 3600000)) + "h" : "null");
+
+  /* Nulls are gaps in recording, not readings. They must not be mistaken for
+     a change of value. */
+  const gappy = [bucket(200, 72.4), bucket(150, null), bucket(100, 71.2),
+                 bucket(50, null), bucket(1, 71.2)];
+  const g = MH.ageFromStatistics(gappy, NOW);
+  check("null buckets are skipped, not read as changes",
+        g && Math.round((NOW - g.at) / 3600000) === 100, JSON.stringify(g));
+
+  /* Unchanged across the whole window yields a floor. This is what blood
+     pressure does on the live instance, and a floor is not a measurement
+     time — it must never be presented as one. */
+  const flat = [];
+  for (let h = 1080; h >= 0; h--) flat.push(bucket(h, 152));
+  const f = MH.ageFromStatistics(flat, NOW);
+  check("an unchanged value yields a floor, not a time",
+        f && f.via === "statistics-floor" && f.at === undefined, JSON.stringify(f));
+  check("the floor is the width of the window",
+        f && Math.round(f.floor / 86400000) === 45, f ? String(f.floor / 86400000) : "null");
+
+  check("an empty series yields nothing", MH.ageFromStatistics([], NOW) === null);
+  check("an all-null series yields nothing",
+        MH.ageFromStatistics([bucket(5, null), bucket(1, null)], NOW) === null);
+
+  /* A floor past the window is enough to know a reading is stale. Short of it,
+     it settles nothing — and either way the exact age stays unknown. */
+  const states = [ent("sensor.w_systolic", "152", { unit_of_measurement: "mmHg" })];
+  const far = MH.resolve(states, {}, { now: NOW, floors: { systolic: 45 * 86400000 } });
+  check("a floor past the window makes a reading stale", far.systolic.stale === true);
+  check("a floor never becomes an exact age",
+        far.systolic.age_days == null && far.systolic.unknown_age === true);
+  check("the floor is reported for display", Math.round(far.systolic.age_floor_days) === 45);
+
+  const near = MH.resolve(states, {}, { now: NOW, floors: { systolic: 3 * 86400000 } });
+  check("a floor short of the window settles nothing",
+        near.systolic.stale === false && near.systolic.unknown_age === true);
+
+  /* A real stamp outranks a statistics floor — it is an actual time. */
+  const both = MH.resolve(
+    states.concat([ent("input_datetime.stride_last_bp", "2026-07-29 11:45:00")]),
+    { stamps: { systolic: "input_datetime.stride_last_bp" } },
+    { now: NOW, floors: { systolic: 45 * 86400000 } });
+  check("a stamp beats a floor", Math.round(both.systolic.age_days) === 9 &&
+        both.systolic.stale === false, String(both.systolic.age_days));
+}
+
+/* Stamp discovery — Stride's helpers, found by name rather than configured. */
+{
+  const stamps = MH.findStamps([
+    ent("input_datetime.stride_last_weigh_in", "2026-08-03 06:41:29"),
+    ent("input_datetime.stride_last_bp", "2026-07-29 11:45:00"),
+    ent("input_datetime.stride_weigh_in_time", "07:00:00"),
+    ent("input_datetime.stride_bp_time", "09:00:00")
+  ]);
+  check("the weigh-in stamp is found", stamps.weight === "input_datetime.stride_last_weigh_in",
+        stamps.weight);
+  check("the BP stamp is found", stamps.systolic === "input_datetime.stride_last_bp",
+        stamps.systolic);
+  check("both BP roles share one stamp", stamps.diastolic === "input_datetime.stride_last_bp");
+  /* `stride_bp_time` is a time-of-day setting, not a measurement record.
+     Binding it would report every BP as measured at 09:00 today. */
+  check("a time-of-day helper is not mistaken for a stamp",
+        Object.values(stamps).indexOf("input_datetime.stride_bp_time") < 0,
+        JSON.stringify(stamps));
+}
+
+/* Source coherence for single-event roles.
+ *
+ * The exact shape found on the live instance: Withings names a workout type
+ * and a duration, Apple Health names a type, duration, energy and both heart
+ * rates — and they are describing different sessions. Resolved role by role,
+ * Withings won `workout_type` (its id carries the literal token "type") while
+ * Apple Health won the rest, and the card described a 41-minute Withings walk
+ * using a 27-minute Apple Health workout's heart rate. */
+{
+  const states = [
+    ent("sensor.bedroom_withings_last_workout_type", "walk"),
+    ent("sensor.bedroom_withings_last_workout_duration", "47.0",
+        { unit_of_measurement: "min" }),
+    ent("sensor.apple_health_last_workout", "Walk"),
+    ent("sensor.apple_health_last_workout_duration", "27", { unit_of_measurement: "min" }),
+    ent("sensor.apple_health_last_workout_energy", "117", { unit_of_measurement: "kcal" }),
+    ent("sensor.apple_health_last_workout_hr_average", "108", { unit_of_measurement: "bpm" }),
+    ent("sensor.apple_health_last_workout_hr_max", "142", { unit_of_measurement: "bpm" }),
+    ent("sensor.apple_health_last_workout_start", "2026-08-07T09:56:59Z")
+  ];
+  const r = MH.resolve(states, {}, { now: NOW });
+  const GROUP = ["workout_type", "workout_duration", "workout_energy",
+                 "workout_hr_avg", "workout_hr_max", "workout_start"];
+
+  check("the workout group resolves to one source",
+        new Set(GROUP.map((k) => r[k].group_source)).size === 1,
+        JSON.stringify(GROUP.map((k) => r[k].group_source)));
+  check("the source that describes the most of the event wins",
+        r.workout_type.group_source === "apple_health", r.workout_type.group_source);
+  check("workout type no longer comes from the other integration",
+        r.workout_type.entity_id === "sensor.apple_health_last_workout",
+        r.workout_type.entity_id);
+  check("no workout role is filled from a rejected source",
+        GROUP.every((k) => !r[k].entity_id || r[k].entity_id.indexOf("withings") < 0),
+        JSON.stringify(GROUP.filter((k) => (r[k].entity_id || "").indexOf("withings") >= 0)));
+  check("the whole event is described",
+        GROUP.every((k) => r[k].entity_id), JSON.stringify(GROUP.filter((k) => !r[k].entity_id)));
+
+  /* One event, one age. `workout_start` holds the moment it happened, so the
+     rest of the group takes that rather than each estimating separately —
+     `workout_type` had nothing but `last_changed` before this. */
+  check("the group's age is anchored to the event's own start time",
+        GROUP.every((k) => Math.abs(r[k].measured_at - Date.parse("2026-08-07T09:56:59Z")) < 1000),
+        JSON.stringify(GROUP.map((k) => [k, r[k].measured_via])));
+  check("a timestamp state is read as its own measurement time",
+        r.workout_start.measured_via === "state", r.workout_start.measured_via);
+  check("roles that inherited the event's time say where it came from",
+        r.workout_type.measured_via === "group:workout_start", r.workout_type.measured_via);
+  check("no workout role is left with a guessed age",
+        GROUP.every((k) => r[k].unknown_age === false),
+        JSON.stringify(GROUP.filter((k) => r[k].unknown_age)));
+
+  /* The state of a timestamp sensor is a time, not a number. `parseFloat` on
+     `2026-08-07T09:56:59Z` returns 2026, which is a plausible-looking year
+     where the card expects a workout time. */
+  check("a timestamp state is not coerced to a number",
+        r.workout_start.value === "2026-08-07T09:56:59Z", JSON.stringify(r.workout_start.value));
+  check("an ordinary numeric state is still a number",
+        r.workout_duration.value === 27, JSON.stringify(r.workout_duration.value));
+
+  /* Withings alone: it can fill two of the six, so it takes the group and the
+     other four go absent rather than being borrowed from anywhere else. */
+  const only = MH.resolve(states.slice(0, 2), {}, { now: NOW });
+  check("a partial source still takes the whole group",
+        only.workout_type.entity_id === "sensor.bedroom_withings_last_workout_type" &&
+        only.workout_duration.entity_id === "sensor.bedroom_withings_last_workout_duration");
+  check("roles the winning source cannot fill are absent, not borrowed",
+        only.workout_energy.entity_id === null && only.workout_hr_max.entity_id === null);
+  check("an absent grouped role says why it is absent",
+        /withings/.test(only.workout_energy.why || ""), only.workout_energy.why);
+
+  /* An explicit pin is the user's decision and survives the coherence pass. */
+  const pinned = MH.resolve(states,
+    { entities: { workout_type: "sensor.bedroom_withings_last_workout_type" } },
+    { now: NOW });
+  check("an explicit pin overrides group coherence",
+        pinned.workout_type.entity_id === "sensor.bedroom_withings_last_workout_type" &&
+        pinned.workout_type.how === "config");
+  check("the rest of the group still resolves coherently around a pin",
+        pinned.workout_energy.entity_id === "sensor.apple_health_last_workout_energy");
+}
+
+/* A goal is a setting, not a measurement. All three ring goals read GAP on the
+   live instance because they had not changed in nine days — which is what a
+   goal is supposed to do. */
+{
+  const states = [
+    ent("sensor.apple_health_move_ring", "37", { unit_of_measurement: "kcal" }),
+    ent("sensor.apple_health_move_goal", "402", { unit_of_measurement: "kcal" }),
+    ent("sensor.apple_health_exercise_goal", "30", { unit_of_measurement: "min" }),
+    ent("sensor.apple_health_stand_goal", "10", { unit_of_measurement: "h" }),
+    ent("sensor.withings_weight_goal", "83", { unit_of_measurement: "kg" })
+  ];
+  const r = MH.resolve(states, {}, { now: NOW,
+    floors: { move_goal: 9 * 86400000, exercise_goal: 9 * 86400000,
+              stand_goal: 9 * 86400000, weight_goal: 28 * 86400000 } });
+  for (const k of ["move_goal", "exercise_goal", "stand_goal", "weight_goal"]) {
+    check(`${k} is never stale`, r[k].stale === false, JSON.stringify(r[k].measured_via));
+  }
+  /* The ring beside it keeps its window — this must not have relaxed staleness
+     generally. */
+  const old = MH.resolve(states, {}, { now: NOW, floors: { move_ring: 9 * 86400000 } });
+  check("the ring itself is still subject to its window", old.move_ring.stale === true);
+
+  /* Nor should a goal be nominated for a stamp automation it has no use for. */
+  const want = MH.needsStamp(r).map((w) => w.role);
+  check("goals are not nominated for stamping",
+        !want.some((k) => /_goal$/.test(k)), JSON.stringify(want));
+}
+
 console.log(failures === 0 ? "  all assertions passed\n" : `  ${failures} FAILED\n`);
 
 /* ---------------------------------------------------------------- *
@@ -275,11 +470,31 @@ if (!fs.existsSync(dump)) {
 }
 
 const states = JSON.parse(fs.readFileSync(dump, "utf8"));
-const resolved = MH.resolve(states, {
-  stamps: { weight: "input_datetime.stride_last_weigh_in",
-            systolic: "input_datetime.stride_last_bp",
-            diastolic: "input_datetime.stride_last_bp" }
-});
+const config = { stamps: MH.findStamps(states) };
+
+/* First pass establishes which entities matter; then statistics fill in the
+   ages the entities themselves cannot give. This is the same two-step the card
+   performs on view mount, so what the table shows is what the card will. */
+let resolved = MH.resolve(states, config);
+
+const statsFile = path.join(__dirname, "stats.json");
+let statNote = "no stats.json — ages fall back to last_changed";
+if (fs.existsSync(statsFile)) {
+  const stats = JSON.parse(fs.readFileSync(statsFile, "utf8"));
+  const at = {}, floors = {};
+  for (const key in resolved) {
+    const r = resolved[key];
+    if (!r.entity_id || r.blank) continue;
+    if (r.measured_via && r.measured_via.indexOf("stamp:") === 0) continue;
+    const got = MH.ageFromStatistics(stats[r.entity_id], Date.now());
+    if (!got) continue;
+    if (got.at != null) at[key] = got.at;
+    else if (got.floor != null) floors[key] = got.floor;
+  }
+  resolved = MH.resolve(states, config, { statLast: at, floors: floors });
+  statNote = `stats.json: ${Object.keys(at).length} exact ages, ` +
+             `${Object.keys(floors).length} floors`;
+}
 const rows = MH.explain(resolved);
 
 console.log(`resolution against ${dump} (${states.length} entities)\n`);
@@ -293,6 +508,16 @@ for (const r of rows) {
 }
 
 const found = rows.filter((r) => r.entity !== "—").length;
-console.log(`\n  ${found} of ${rows.length} roles resolved`);
+console.log(`\n  ${found} of ${rows.length} roles resolved · ${statNote}`);
 console.log(`  live tabs: ${MH.liveTabs(resolved).join(", ") || "none"}`);
+
+const want = MH.needsStamp(resolved);
+if (want.length) {
+  console.log(`\n  ${want.length} roles have no real measurement age — no timestamp` +
+              ` state, no\n  statistics, and no stamp helper. They render as "age` +
+              ` unknown", never as fresh:`);
+  for (const w of want) console.log(`    ${w.role.padEnd(24)} ${w.entity_id}`);
+  console.log(`\n  A change-triggered input_datetime would fix each one, but the card` +
+              `\n  reports this rather than writing automations into an instance.`);
+}
 process.exit(failures ? 1 : 0);

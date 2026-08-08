@@ -39,9 +39,21 @@
    * Small helpers
    * ------------------------------------------------------------------ */
 
+  /**
+   * A state as a number, or null if it is not one.
+   *
+   * The whole string has to be numeric. `parseFloat` stops at the first
+   * character it cannot use, which quietly turned the state
+   * `2026-08-07T09:56:59Z` into the number `2026` — so `workout_start` carried
+   * a year where the Today card expected a workout time, and it looked like a
+   * plausible value rather than an error.
+   */
   const num = (v) => {
+    if (typeof v === "number") return Number.isFinite(v) ? v : null;
     if (v == null) return null;
-    const n = parseFloat(v);
+    const s = String(v).trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    const n = parseFloat(s);
     return Number.isFinite(n) ? n : null;
   };
 

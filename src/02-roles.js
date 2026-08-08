@@ -13,6 +13,15 @@
    *   window   how many days old a reading may be before it reads as a GAP.
    *            This is per-metric physiology, not a global timeout: a weight
    *            four days old is current, an activity ring four days old is not.
+   *   stamp    name hints for an existing change-triggered input_datetime that
+   *            records when this metric was last really measured. See
+   *            04-freshness.js — most roles do not need one, because statistics
+   *            answer the question without any extra plumbing.
+   *   group    roles that describe one single event, and must therefore all
+   *            come from the same source. Resolved together — see the
+   *            coherence pass in 03-resolve.js.
+   *   timestamp  the state is itself a time, so it is its own measurement age
+   *            and needs none of the machinery in 04-freshness.js.
    *   match    discovery hints — see 03-resolve.js for how they are scored
    *              device_class  strongest signal, when the integration sets one
    *              units         medium
@@ -27,6 +36,7 @@
   MH.ROLES = [
     /* --- Body ------------------------------------------------------- */
     { key: "weight", label: "Weight", tab: "body", unit: "kg", window: 14,
+      stamp: [["weigh", "in"], ["weight"], ["weighin"]],
       match: { device_class: ["weight"], units: ["kg", "lb", "st"],
                any: [["weight"]], not: ["goal", "target", "lean", "bmi", "ideal"] } },
 
@@ -57,14 +67,17 @@
      * reading as a real value with "9 days ago" beside it, not as a GAP. A
      * reading being old is worth saying; it is not the same as absent. */
     { key: "systolic", label: "Systolic", tab: "heart", unit: "mmHg", window: 14,
+      stamp: [["bp"], ["blood", "pressure"], ["systolic"]],
       match: { units: ["mmHg"], any: [["systolic"]] } },
 
     { key: "diastolic", label: "Diastolic", tab: "heart", unit: "mmHg", window: 14,
+      stamp: [["bp"], ["blood", "pressure"], ["diastolic"]],
       match: { units: ["mmHg"], any: [["diastolic"]] } },
 
     /* Pulse taken by the BP cuff, at the same moment as the reading above.
      * Distinct from resting_hr, which the watch computes overnight. */
     { key: "cuff_pulse", label: "Pulse at reading", tab: "heart", unit: "bpm", window: 14,
+      stamp: [["bp"], ["blood", "pressure"]],
       match: { units: ["bpm"], any: [["heart", "pulse"], ["pulse"]],
                not: ["resting", "walking", "average", "max", "min", "sleep"] } },
 
@@ -109,15 +122,22 @@
 
     /* --- Today: activity rings -------------------------------------- *
      * Rings come from HKActivitySummary and arrive as a value plus a goal.
-     * A source with no rings simply resolves nothing and the card hides. */
+     * A source with no rings simply resolves nothing and the card hides.
+     *
+     * Every `*_goal` here is `window: null`, like `weight_goal` and
+     * `step_goal`. A goal is a setting, not a measurement: it is *supposed* to
+     * sit unchanged for months, so ageing it against the ring's one-day window
+     * marked all three GAP on this instance while the rings beside them were
+     * minutes old. Staleness of the ring is what the freshness rule is for; the
+     * goal has no measurement time to be stale about. */
     { key: "move_ring", label: "Move", tab: "today", unit: "kcal", window: 1,
       match: { units: ["kcal"], any: [["move", "ring"], ["move"]], not: ["goal"] } },
-    { key: "move_goal", label: "Move goal", tab: "today", unit: "kcal", window: 1,
+    { key: "move_goal", label: "Move goal", tab: "today", unit: "kcal", window: null,
       match: { units: ["kcal"], any: [["move", "goal"]] } },
 
     { key: "exercise_ring", label: "Exercise", tab: "today", unit: "min", window: 1,
       match: { units: ["min"], any: [["exercise", "ring"], ["exercise", "minutes"]], not: ["goal"] } },
-    { key: "exercise_goal", label: "Exercise goal", tab: "today", unit: "min", window: 1,
+    { key: "exercise_goal", label: "Exercise goal", tab: "today", unit: "min", window: null,
       match: { units: ["min"], any: [["exercise", "goal"]] } },
 
     /* Stand is counted in hours. `stand_time` is the same idea in minutes and
@@ -125,23 +145,35 @@
     { key: "stand_ring", label: "Stand", tab: "today", unit: "h", window: 1,
       match: { units: ["h"], any: [["stand", "ring"], ["stand", "hours"], ["stand", "time"]],
                not: ["goal"] } },
-    { key: "stand_goal", label: "Stand goal", tab: "today", unit: "h", window: 1,
+    { key: "stand_goal", label: "Stand goal", tab: "today", unit: "h", window: null,
       match: { units: ["h"], any: [["stand", "goal"]] } },
 
-    /* --- Today: last workout ---------------------------------------- */
+    /* --- Today: last workout ---------------------------------------- *
+     * These six describe *one event*, so they carry `group: "last_workout"`
+     * and are resolved together from a single source. Left to resolve
+     * independently they did not: on this instance the type came from Withings
+     * (a 41-minute walk) while duration, energy and both heart rates came from
+     * Apple Health (a 27-minute one), and the card would have rendered a
+     * confident summary of a workout that never happened. */
     { key: "workout_type", label: "Last workout type", tab: "today", unit: null, window: 14,
+      group: "last_workout",
       match: { any: [["last", "workout", "type"], ["last", "workout"]],
                not: ["distance", "duration", "energy", "climb", "hr", "start", "calories", "intensity"] } },
     { key: "workout_duration", label: "Last workout duration", tab: "today", unit: "min", window: 14,
+      group: "last_workout",
       match: { any: [["last", "workout", "duration"]] } },
     { key: "workout_energy", label: "Last workout calories", tab: "today", unit: "kcal", window: 14,
+      group: "last_workout",
       match: { any: [["last", "workout", "energy"], ["last", "workout", "calories"],
                      ["calories", "burnt", "last", "workout"]] } },
     { key: "workout_hr_avg", label: "Last workout average HR", tab: "today", unit: "bpm", window: 14,
+      group: "last_workout",
       match: { any: [["last", "workout", "hr", "average"], ["workout", "hr", "avg"]] } },
     { key: "workout_hr_max", label: "Last workout peak HR", tab: "today", unit: "bpm", window: 14,
+      group: "last_workout",
       match: { any: [["last", "workout", "hr", "max"], ["workout", "hr", "peak"]] } },
     { key: "workout_start", label: "Last workout time", tab: "today", unit: null, window: 14,
+      group: "last_workout", timestamp: true,
       match: { any: [["last", "workout", "start"]] } },
     { key: "workouts_week", label: "Workouts this week", tab: "today", unit: null, window: 1,
       match: { any: [["workouts", "7", "days"], ["workouts", "this", "week"], ["workouts", "week"]] } },
@@ -175,6 +207,7 @@
      * Drives the `SYNCED 40S AGO` chip. Unlike every other role this one is
      * *about* time, so its state is a timestamp rather than a measurement. */
     { key: "last_sync", label: "Last sync", tab: "today", unit: null, window: 1,
+      timestamp: true,
       match: { any: [["last", "sync"]] } }
   ];
 
