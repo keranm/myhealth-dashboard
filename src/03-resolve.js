@@ -287,6 +287,10 @@
         r.value = r.blank ? null : (num(raw) != null ? num(raw) : raw);
         r.unit = (ent.attributes || {}).unit_of_measurement || null;
         r.friendly_name = (ent.attributes || {}).friendly_name || null;
+        /* Some roles carry their content in attributes rather than in the
+           state: `sensor.stride_coach` is a 255-character state with the real
+           headline and body beside it. */
+        r.attributes = ent.attributes || {};
 
         const stampId = (config.stamps || {})[role.key];
         const m = measuredAt(ent, { stamp: stampId ? byId[stampId] : null,

@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>myHealth Dashboard — preview</title>
+<!--
+  Renders the built card against a real states dump, outside Home Assistant.
+
+  It fakes exactly as much `hass` as the card touches: `states` as an object
+  keyed by entity id (which is the shape HA passes, unlike the array
+  /api/states returns), and `callWS` answering the one statistics query the
+  freshness layer makes. Everything else is the shipped file.
+
+    python3 -m http.server 8777 --directory tools
+    open http://localhost:8777/preview.html
+
+  Add ?tab=body to land on another view, or ?dark=1 to force the dark palette.
+-->
+<style>
+  html, body { margin: 0; background: #f2f5f4; }
+  #err { font: 14px ui-monospace, monospace; color: #a02940; padding: 20px; white-space: pre-wrap; }
+</style>
+<div id="err" hidden></div>
+<script src="../dist/myhealth-dashboard.js"></script>
+<script>
+(async () => {
+  const fail = (e) => {
+    const box = document.getElementById("err");
+    box.hidden = false;
+    box.textContent = "preview failed:\n" + (e && e.stack || e);
+  };
+  try {
+    const q = new URLSearchParams(location.search);
+    const [statesArr, stats] = await Promise.all([
+      fetch("states.json").then((r) => r.json()),
+      fetch("stats.json").then((r) => r.json()).catch(() => ({}))
+    ]);
+
+    /* ?only=withings keeps only entities whose id matches, which is how the
+       standalone rule gets looked at rather than merely asserted: a user with
+       one scale and nothing else should get a page that degrades, not one
+       that breaks. */
+    const only = q.get("only");
+    const states = {};
+    for (const e of statesArr) {
+      if (only && e.entity_id.indexOf(only) < 0) continue;
+      states[e.entity_id] = e;
+    }
+
+    const hass = {
+      states,
+      callWS: async (msg) => {
+        if (msg.type === "recorder/statistics_during_period") {
+          const out = {};
+          for (const id of msg.statistic_ids || []) if (stats[id]) out[id] = stats[id];
+          return out;
+        }
+        return {};
+      }
+    };
+
+    const card = document.createElement("myhealth-dashboard");
+    card.setConfig({ type: "custom:myhealth-dashboard", tab: q.get("tab") || "today" });
+    if (q.get("dark")) card.setAttribute("data-theme", "dark");
+    document.body.appendChild(card);
+    card.hass = hass;
+
+    /* The statistics pass is async; give it a moment, then mark the page ready
+       so a screenshot waits for the real ages rather than the first paint. */
+    setTimeout(() => { document.title = "ready"; }, 900);
+  } catch (e) { fail(e); }
+})();
+window.addEventListener("error", (e) => {
+  const box = document.getElementById("err");
+  box.hidden = false;
+  box.textContent += "\n" + e.message + "  @" + e.filename + ":" + e.lineno;
+});
+</script>

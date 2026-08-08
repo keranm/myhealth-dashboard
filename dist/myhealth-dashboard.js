@@ -573,6 +573,10 @@
         r.value = r.blank ? null : (num(raw) != null ? num(raw) : raw);
         r.unit = (ent.attributes || {}).unit_of_measurement || null;
         r.friendly_name = (ent.attributes || {}).friendly_name || null;
+        /* Some roles carry their content in attributes rather than in the
+           state: `sensor.stride_coach` is a 255-character state with the real
+           headline and body beside it. */
+        r.attributes = ent.attributes || {};
 
         const stampId = (config.stamps || {})[role.key];
         const m = measuredAt(ent, { stamp: stampId ? byId[stampId] : null,
@@ -845,6 +849,1315 @@
     }
     return { at, floors };
   };
+
+  /* ------------------------------------------------------------------ *
+   * Formatting, units and clinical bands
+   * ------------------------------------------------------------------ *
+   *
+   * Kept pure and free of the DOM so the harness can assert it. Everything
+   * here turns a resolved role into something a human reads, and the rules
+   * about *what may be shown at all* live here rather than in the views:
+   * `MH.readable()` is the single gate that stops a stale or unknown-age
+   * reading being rendered as though it were current.
+   */
+
+  /**
+   * 8432 -> "8,432". Mono digits, so grouping is what makes it scannable.
+   *
+   * An explicit `dp` is held exactly, trailing zero and all: 2.974 km at one
+   * decimal is "3.0 km", not "3 km". Dropping the zero silently restates a
+   * measurement to a precision it was not taken at.
+   */
+  const group = (n, dp) => {
+    if (n == null || !Number.isFinite(n)) return "—";
+    const [i, f] = (dp == null ? n.toString() : n.toFixed(dp)).split(".");
+    return i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (f ? "." + f : "");
+  };
+
+  MH.group = group;
+
+  /* Unit conversion. A role declares its canonical unit and a source in
+     another one is converted rather than relabelled — showing `216` beside
+     "kg" because the scale reports pounds is exactly the class of quiet
+     wrongness this card exists to avoid. */
+  const CONVERT = {
+    "lb>kg": (v) => v * 0.45359237,
+    "st>kg": (v) => v * 6.35029318,
+    "kg>lb": (v) => v / 0.45359237,
+    "mi>km": (v) => v * 1.609344,
+    "m>km": (v) => v / 1000,
+    "km>m": (v) => v * 1000,
+    "ft>m": (v) => v * 0.3048,
+    "min>h": (v) => v / 60,
+    "h>min": (v) => v * 60,
+    "s>min": (v) => v / 60,
+    "cal>kcal": (v) => v,
+    "calories>kcal": (v) => v
+  };
+
+  MH.convert = (value, from, to) => {
+    if (value == null || !to || !from || from === to) return value;
+    const f = CONVERT[from + ">" + to];
+    return f ? f(value) : value;
+  };
+
+  /** A role's value in the role's own unit, converted if the source differs. */
+  MH.valueIn = (r) => {
+    const role = MH.ROLE_BY_KEY[r.role] || {};
+    if (typeof r.value !== "number") return r.value;
+    return MH.convert(r.value, r.unit, role.unit);
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Time
+   * ------------------------------------------------------------------ */
+
+  /** "40s", "13 hours", "9 days" — the unit the design uses at each scale. */
+  MH.relTime = (ms, now) => {
+    if (ms == null) return null;
+    const s = Math.max(0, ((now || Date.now()) - ms) / 1000);
+    if (s < 45) return Math.round(s) + "s";
+    const m = s / 60;
+    if (m < 45) return Math.round(m) + (Math.round(m) === 1 ? " minute" : " minutes");
+    const h = m / 60;
+    if (h < 22) return Math.round(h) + (Math.round(h) === 1 ? " hour" : " hours");
+    const d = h / 24;
+    if (d < 30) return Math.round(d) + (Math.round(d) === 1 ? " day" : " days");
+    const mo = d / 30.44;
+    if (mo < 18) return Math.round(mo) + (Math.round(mo) === 1 ? " month" : " months");
+    return Math.round(d / 365.25) + " years";
+  };
+
+  /** The `9 DAYS AGO` eyebrow, and its two honest alternatives. */
+  MH.ageLabel = (r, now) => {
+    if (!r || !r.entity_id || r.blank) return null;
+    if (r.measured_at != null) return MH.relTime(r.measured_at, now) + " ago";
+    if (r.age_floor_days != null) return "over " + Math.floor(r.age_floor_days) + " days ago";
+    return "age unknown";
+  };
+
+  /* "AUGUST 2026" style month, used by the gap copy — "No reading since
+     April 2026" has to name a month, not a relative distance. */
+  const MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+                  "August", "September", "October", "November", "December"];
+  MH.monthYear = (ms) => {
+    if (ms == null) return null;
+    const d = new Date(ms);
+    return MONTHS[d.getMonth()] + " " + d.getFullYear();
+  };
+
+  /* ------------------------------------------------------------------ *
+   * What may be shown
+   * ------------------------------------------------------------------ *
+   *
+   * The rule the whole product turns on, in one function. A reading is
+   * readable only when it exists *and* is known to be current. Stale and
+   * unknown-age both fall through to the designed GAP treatment — a value with
+   * no trustworthy age is not a value you may print in 52px mono.
+   */
+  MH.readable = (r) =>
+    !!(r && r.entity_id && !r.blank && !r.stale && !r.unknown_age && r.value != null);
+
+  /**
+   * A weaker gate, for supporting figures rather than headline readings.
+   *
+   * The design's rule is that a sparse metric "stays visible but is dimmed",
+   * not that it disappears — so dropping the treadmill's weekly distance
+   * because nothing can date it loses a number the user does have. `readable`
+   * still guards anything rendered as a current clinical value; `showable`
+   * lets a supporting stat appear, dimmed, with its uncertainty stated.
+   */
+  MH.showable = (r) =>
+    !!(r && r.entity_id && !r.blank && !r.stale && r.value != null);
+
+  /** Why a card is in its gap state, in the design's own voice. */
+  MH.gapReason = (r, now) => {
+    if (!r || !r.entity_id) return "Not available from any source here";
+    if (r.blank) return "No reading yet";
+    if (r.stale && r.measured_at != null) {
+      return "No reading since " + MH.monthYear(r.measured_at);
+    }
+    if (r.stale && r.age_floor_days != null) {
+      return "No reading in over " + Math.floor(r.age_floor_days) + " days";
+    }
+    if (r.unknown_age) return "Age of this reading is unknown";
+    return "No reading";
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Clinical bands
+   * ------------------------------------------------------------------ *
+   *
+   * Colour carries meaning here, so the band is computed from the reading and
+   * never hardcoded per card. Thresholds are the ACC/AHA 2017 categories, the
+   * ones the design's NORMAL / ELEVATED / STAGE 1 / STAGE 2 axis is labelled
+   * with. Systolic and diastolic are assessed separately and the worse of the
+   * two wins, which is how the guideline reads.
+   */
+  const BP_BANDS = [
+    { key: "normal", label: "Normal", tone: "good" },
+    { key: "elevated", label: "Elevated", tone: "warn" },
+    { key: "stage1", label: "Stage 1", tone: "warn" },
+    { key: "stage2", label: "Stage 2", tone: "bad" }
+  ];
+
+  MH.bpBand = (sys, dia) => {
+    if (sys == null && dia == null) return null;
+    let i = 0;
+    if (sys != null) {
+      if (sys >= 140) i = 3;
+      else if (sys >= 130) i = 2;
+      else if (sys >= 120) i = 1;
+    }
+    if (dia != null) {
+      /* Diastolic has no "elevated" band — 80 is already stage 1. */
+      const j = dia >= 90 ? 3 : dia >= 80 ? 2 : 0;
+      if (j > i) i = j;
+    }
+    return BP_BANDS[i];
+  };
+
+  /** Resting heart rate, read as a fitness signal rather than a diagnosis. */
+  MH.hrBand = (bpm) => {
+    if (bpm == null) return null;
+    if (bpm < 60) return { key: "good", label: "Good", tone: "good" };
+    if (bpm < 75) return { key: "normal", label: "Normal", tone: "good" };
+    if (bpm < 90) return { key: "high", label: "Raised", tone: "warn" };
+    return { key: "veryhigh", label: "High", tone: "bad" };
+  };
+
+  MH.spo2Band = (pct) => {
+    if (pct == null) return null;
+    if (pct >= 95) return { key: "normal", label: "Normal", tone: "good" };
+    if (pct >= 91) return { key: "low", label: "Low", tone: "warn" };
+    return { key: "verylow", label: "Very low", tone: "bad" };
+  };
+
+  /** Progress against a goal, clamped for the bar but reported honestly. */
+  MH.progress = (value, goal) => {
+    if (value == null || !goal) return null;
+    const ratio = value / goal;
+    return { ratio, pct: Math.max(0, Math.min(1, ratio)) * 100, met: ratio >= 1 };
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Style
+   * ------------------------------------------------------------------ *
+   *
+   * The handoff's tokens, verbatim, as custom properties. They are declared
+   * on the card's own shadow root rather than taken from the HA theme: this
+   * design's colours carry clinical meaning — green is "in range", red is
+   * "stage 2" — and a user's theme must not be able to repaint a blood
+   * pressure reading green.
+   *
+   * The dark palette is option 2b from the handoff's exploration file, applied
+   * to the same token names so nothing downstream branches on theme.
+   *
+   * Fonts are the HA theme's stack rather than Google Fonts: a HACS card must
+   * not fetch from a third party. IBM Plex is used when the instance already
+   * has it, which HA themes commonly do.
+   */
+
+  /* Option 2b from the handoff's exploration file. Written once and applied
+     through both selectors below, so the two paths into dark mode cannot
+     drift apart. */
+  const DARK_TOKENS = `
+    --chrome: #0a1420;
+    --page: #0a1420;
+    --surface: #101d2c;
+    --sunken: #0d1826;
+    --tile: #142234;
+    --border: #1e2f42;
+    --rule: #1a2836;
+    --ink: #eaf2fa;
+    --ink-2: #c3d2df;
+    --ink-muted: #8496a8;
+    --ink-faint: #6f8093;
+    --green: #16c397;
+    --green-light: #1e5f4c;
+    --green-tint: #102e27;
+    --green-tint-2: #0d2620;
+    --green-border: #1c4a3d;
+    --green-deep: #16c397;
+    --teal: #16c397;
+    --blue: #4da3ff;
+    --red: #ff5c7a;
+    --red-text: #ff8098;
+    --red-tint: #2a1420;
+    --red-border: #4a2130;
+    --coral: #ff5c7a;
+    --amber: #ffb84d;
+    --amber-deep: #ffb84d;
+    --amber-tint: #2a2113;
+    --amber-tint-2: #241c11;
+    --amber-border: #4a3a1c;
+    --amber-border-2: #4a3a1c;
+    --gold: #ffb84d;
+    --dim-ink: #5c6b7a;
+    --dim-border: #22303f;
+    --chrome-inactive: #8fa3b4;
+    --amber-ink: #ffb84d;
+    --amber-ink-2: #c3d2df;
+    --ring-track: #1c2a3a;
+  `;
+
+  /* Two ways in, because a HACS card has two masters. Home Assistant decides
+     dark from the user's *theme*, which the card reads off
+     `hass.themes.darkMode` and stamps onto the host — that is authoritative
+     and wins. Outside HA (tools/preview.html, or a bare page) there is no
+     theme to ask, so the OS preference stands in unless the host has been
+     stamped light. */
+  const DARK_SELECTORS = [
+    [':host([data-theme="dark"])', ""],
+    ['@media (prefers-color-scheme: dark) { :host(:not([data-theme="light"]))', "}"]
+  ];
+  const DARK_CSS = DARK_SELECTORS
+    .map(([sel, close]) => sel + " {" + DARK_TOKENS + "}" + close)
+    .join("\n");
+
+  MH.CSS = `
+:host {
+  --chrome: #0d2233;
+  --page: #f2f5f4;
+  --surface: #ffffff;
+  --sunken: #fbfcfb;
+  --tile: #f7faf9;
+  --border: #e3e8e6;
+  --rule: #eef2ef;
+  --ink: #14201b;
+  --ink-2: #4d5a53;
+  --ink-muted: #6d7a74;
+  --ink-faint: #8a978f;
+  --green: #0f9c72;
+  --green-light: #b9d9cc;
+  --green-tint: #e2f4ed;
+  --green-tint-2: #f1faf6;
+  --green-border: #cde9de;
+  --green-deep: #0f6d52;
+  --teal: #16c397;
+  --blue: #2f7fc4;
+  --red: #c0334d;
+  --red-text: #a02940;
+  --red-tint: #fbeef0;
+  --red-border: #f2c9d1;
+  --coral: #e2445c;
+  --amber: #d98a11;
+  --amber-deep: #a07a24;
+  --amber-tint: #fff8ec;
+  --amber-tint-2: #fdf3e2;
+  --amber-border: #f0d9ae;
+  --amber-border-2: #ecd4a6;
+  --gold: #d99b2b;
+  --dim-ink: #a3aea7;
+  --dim-border: #d6ddd9;
+  --chrome-inactive: #8fa3b4;
+  --amber-ink: #5c3f09;
+  --amber-ink-2: #8a6a2a;
+  --ring-track: #efeeee;
+
+  --sans: "IBM Plex Sans", var(--paper-font-body1_-_font-family, system-ui),
+          -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  display: block;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+${DARK_CSS}
+
+* { box-sizing: border-box; }
+
+/* --- chrome ------------------------------------------------------- */
+.bar {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--chrome); height: 60px;
+}
+.bar-inner {
+  max-width: 1360px; margin: 0 auto; padding: 0 32px;
+  height: 100%; display: flex; align-items: center;
+  justify-content: space-between; gap: 16px;
+}
+.tabs { display: flex; height: 100%; }
+.tab {
+  font-size: 15px; font-weight: 600; padding: 0 16px;
+  height: 100%; display: flex; align-items: center;
+  cursor: pointer; color: var(--chrome-inactive);
+  border-bottom: 2px solid transparent;
+  background: none; border-top: 0; border-left: 0; border-right: 0;
+  font-family: inherit;
+}
+.tab[aria-selected="true"] { color: #fff; border-bottom-color: var(--teal); }
+.tab:focus-visible { outline: 2px solid var(--teal); outline-offset: -4px; }
+
+.sync { display: flex; align-items: center; gap: 8px; }
+.sync-text {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
+  color: var(--chrome-inactive); text-transform: uppercase;
+}
+
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); flex: none; }
+.dot.pulse { animation: pulseDot 2s ease-in-out infinite; }
+.dot.amber { background: var(--amber); width: 9px; height: 9px; }
+.dot.green { background: var(--green); }
+
+/* --- view --------------------------------------------------------- */
+.view {
+  max-width: 1360px; margin: 0 auto; padding: 28px 32px 56px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.row { display: grid; gap: 16px; align-items: start; }
+.row.hero { grid-template-columns: 1fr 380px; }
+.row.four { grid-template-columns: repeat(4, 1fr); }
+.row.two { grid-template-columns: repeat(2, 1fr); }
+
+@media (max-width: 1100px) {
+  .row.hero, .row.four, .row.two { grid-template-columns: 1fr; }
+  .bar-inner, .view { padding-left: 20px; padding-right: 20px; }
+}
+@media (max-width: 1100px) and (min-width: 700px) {
+  .row.four { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* --- cards -------------------------------------------------------- */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 14px; padding: 18px 20px;
+  animation: cardIn .45s ease both;
+}
+.card.hero { border-radius: 16px; padding: 26px 30px; }
+.card.gap { opacity: .5; }
+
+.eyebrow {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--ink-faint);
+}
+.title { font-size: 15px; font-weight: 600; color: var(--ink); }
+.metric {
+  font-family: var(--mono); font-size: 32px; font-weight: 600;
+  color: var(--ink); line-height: 1.1; letter-spacing: -.01em;
+}
+.metric .unit { font-size: 15px; font-weight: 500; color: var(--ink-muted); margin-left: 4px; }
+.support { font-size: 13px; color: var(--ink-muted); }
+.body { font-size: 15px; line-height: 1.65; color: var(--ink-2); text-wrap: pretty; }
+
+.badge {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  border-radius: 20px; padding: 3px 8px; white-space: nowrap;
+}
+.badge.good { background: var(--green-tint); color: var(--green-deep); }
+.badge.warn { background: var(--amber-tint-2); color: var(--amber-deep); }
+.badge.bad  { background: var(--red); color: #fff; }
+.badge.gap  { border: 1px solid var(--dim-border); color: var(--ink-muted); }
+
+.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+/* Vitals cards carry their status in a 3px top border. */
+.card.vital { border-top: 3px solid var(--dim-border); padding-top: 16px; }
+.card.vital.good { border-top-color: var(--green); }
+.card.vital.info { border-top-color: var(--blue); }
+.badge.info { background: var(--green-tint); color: var(--green-deep); }
+.card.vital.warn { border-top-color: var(--amber-border-2); }
+.card.vital.bad  { border-top-color: var(--red); border-color: var(--red-border); }
+.card.vital .metric.bad { color: var(--red-text); }
+
+.track { height: 5px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+.track > i { display: block; height: 100%; border-radius: 3px; background: var(--green); }
+
+.stack { display: flex; flex-direction: column; }
+
+/* --- coach -------------------------------------------------------- */
+.coach { display: flex; gap: 32px; align-items: flex-start; }
+/* Capped, not just flexed: with no medication card beside it the hero card
+   spans the full 1360px, and coach prose set to that measure is unreadable.
+   74ch is a comfortable line for 15px body copy.
+   (No backticks in this file — MH.CSS is a template literal.) */
+.coach-main { flex: 1; display: flex; flex-direction: column; gap: 11px; min-width: 0; max-width: 74ch; }
+.headline { font-size: 25px; font-weight: 600; color: var(--ink); line-height: 1.3; }
+.hr { height: 1px; background: var(--rule); }
+
+.legend { display: flex; gap: 18px; flex-wrap: wrap; }
+.legend-item { display: flex; align-items: center; gap: 6px; }
+.swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.legend-label { font-size: 13px; color: var(--ink-muted); }
+.legend-value { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--ink); }
+
+.next {
+  background: var(--green-tint-2); border: 1px solid var(--green-border);
+  border-radius: 12px; padding: 14px 16px;
+  display: flex; align-items: center; gap: 14px;
+}
+.next-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+  color: var(--green-deep); flex: none;
+}
+.next-text { font-size: 15px; color: var(--ink); flex: 1; }
+
+.btn {
+  font-family: inherit; font-size: 13px; font-weight: 600;
+  border-radius: 8px; padding: 9px 14px; border: 0; cursor: pointer;
+  background: var(--green); color: #fff; white-space: nowrap;
+}
+.btn.dark { background: var(--chrome); font-size: 14px; border-radius: 10px; padding: 11px 18px; }
+.btn.amber { background: var(--amber); }
+.btn.ghost { background: none; border: 1px solid var(--amber-border-2); color: var(--amber-deep); }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.ask { display: flex; gap: 10px; }
+.ask input {
+  flex: 1; background: var(--sunken); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; font-size: 14px;
+  font-family: inherit; color: var(--ink); min-width: 0;
+}
+.ask input::placeholder { color: var(--ink-faint); }
+
+/* --- medication --------------------------------------------------- */
+.card.med-due { background: var(--amber-tint); border-color: var(--amber-border); border-radius: 16px; padding: 22px 24px; }
+.card.med-done { border-color: var(--green-border); border-radius: 16px; padding: 22px 24px; }
+.med-title { font-size: 20px; font-weight: 600; }
+.card.med-due .med-title { color: var(--amber-ink); }
+.card.med-due .med-body { color: var(--amber-ink-2); font-size: 14px; line-height: 1.6; }
+.card.med-due .eyebrow { color: var(--amber-deep); }
+.med-actions { display: flex; gap: 10px; }
+
+/* --- list --------------------------------------------------------- */
+.entry {
+  display: grid; grid-template-columns: 130px 1fr; gap: 16px;
+  padding: 14px 0; border-top: 1px solid var(--rule);
+}
+.entry:first-of-type { border-top: 0; }
+.entry-when { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); text-transform: uppercase; }
+.entry-title { font-size: 15px; font-weight: 600; color: var(--ink); }
+.entry-sum { font-size: 14px; color: var(--ink-muted); }
+
+/* --- stat groups -------------------------------------------------- */
+.stats { display: flex; gap: 32px; flex-wrap: wrap; }
+.stat-value { font-family: var(--mono); font-size: 24px; font-weight: 600; color: var(--ink); }
+.stat-caption { font-size: 13px; color: var(--ink-muted); }
+
+.chip { display: flex; align-items: center; gap: 6px; }
+.chip-text { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; color: var(--ink-faint); text-transform: uppercase; }
+
+.note {
+  background: var(--amber-tint); border: 1px solid var(--amber-border);
+  border-radius: 12px; padding: 14px 16px; display: flex; gap: 14px; align-items: baseline;
+}
+.note .eyebrow { color: var(--amber-deep); flex: none; }
+.note-text { font-size: 14px; color: var(--ink-2); line-height: 1.6; }
+
+.empty { padding: 40px 0; text-align: center; color: var(--ink-muted); font-size: 15px; }
+
+/* --- motion ------------------------------------------------------- */
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pulseDot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .3; transform: scale(.78); }
+}
+@keyframes ringFill { from { stroke-dashoffset: var(--from); } }
+
+.card.gap { animation-name: cardIn; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card, .ring circle { animation: none !important; }
+  .dot.pulse { animation: none !important; opacity: 1 !important; }
+}
+`;
+
+  /* ------------------------------------------------------------------ *
+   * DOM helpers
+   * ------------------------------------------------------------------ *
+   *
+   * Small enough to stay readable, and deliberately not a framework. Views
+   * build their tree once with `el()` and then mutate text nodes in place —
+   * `set hass` fires on every state change in the instance, and rebuilding the
+   * page each time would restart every entry animation.
+   *
+   * Everything is created with textContent, never innerHTML: coach messages
+   * and entity friendly-names are user data and must not be parsed as markup.
+   */
+
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  const svg = (tag, attrs) => {
+    const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    for (const k in attrs || {}) n.setAttribute(k, attrs[k]);
+    return n;
+  };
+
+  const add = (parent, ...kids) => {
+    for (const k of kids) if (k) parent.appendChild(k);
+    return parent;
+  };
+
+  MH.el = el;
+  MH.svg = svg;
+  MH.add = add;
+
+  /**
+   * The three activity rings.
+   *
+   * Concentric arcs, each rotated -90° so they start at twelve o'clock, drawn
+   * with `stroke-dasharray` = circumference and animated by moving
+   * `stroke-dashoffset` from a full circle to the fraction completed. A closed
+   * ring is offset 0.
+   *
+   * Over-achievement is clamped at a full circle rather than wrapping: a
+   * second lap would render 664 kcal against a 402 goal as a ring that looks
+   * two-thirds done.
+   */
+  const RING_SPEC = [
+    { key: "move", r: 64, color: "#e2445c", track: "#f0eeee", delay: 0 },
+    { key: "exercise", r: 48, color: "#0f9c72", track: "#eaefec", delay: .12 },
+    { key: "stand", r: 32, color: "#2f7fc4", track: "#e9eef3", delay: .24 }
+  ];
+  MH.RING_SPEC = RING_SPEC;
+
+  MH.rings = (values) => {
+    const root = svg("svg", { class: "ring", width: 140, height: 140,
+                              viewBox: "0 0 150 150", role: "img" });
+    const arcs = {};
+    for (const spec of RING_SPEC) {
+      const c = 2 * Math.PI * spec.r;
+      /* The track goes through a custom property rather than the design's
+         literal greys: unfilled track at #f0eeee on a #101d2c card reads as
+         three bright white rings. The ring colours themselves stay literal —
+         they carry meaning and must not follow a theme. */
+      const track = svg("circle", {
+        cx: 75, cy: 75, r: spec.r, fill: "none", "stroke-width": 13
+      });
+      track.style.stroke = `var(--ring-track, ${spec.track})`;
+      add(root, track);
+      const arc = svg("circle", {
+        cx: 75, cy: 75, r: spec.r, fill: "none", stroke: spec.color,
+        "stroke-width": 13, "stroke-linecap": "round",
+        "stroke-dasharray": c.toFixed(2),
+        transform: "rotate(-90 75 75)"
+      });
+      arc.style.setProperty("--from", c.toFixed(2));
+      arc.style.animation = `ringFill 1.4s cubic-bezier(.2,.8,.2,1) ${spec.delay}s both`;
+      add(root, arc);
+      arcs[spec.key] = { node: arc, c };
+    }
+
+    const apply = (vals) => {
+      const parts = [];
+      for (const spec of RING_SPEC) {
+        const p = vals && vals[spec.key];
+        const frac = p ? Math.max(0, Math.min(1, p.ratio)) : 0;
+        const a = arcs[spec.key];
+        a.node.setAttribute("stroke-dashoffset", (a.c * (1 - frac)).toFixed(2));
+        if (p) parts.push(`${spec.key} ${Math.round(p.ratio * 100)}%`);
+      }
+      root.setAttribute("aria-label",
+        parts.length ? "Activity rings: " + parts.join(", ") : "Activity rings: no data");
+    };
+    apply(values);
+    root.update = apply;
+    return root;
+  };
+
+  /** A `label + value` legend row under the rings. */
+  MH.ringLegend = (items) => {
+    const row = el("div", "legend");
+    for (const it of items) {
+      const g = el("div", "legend-item");
+      const sw = el("span", "swatch");
+      sw.style.background = it.color;
+      add(g, sw, el("span", "legend-label", it.label), el("span", "legend-value", it.value));
+      add(row, g);
+    }
+    return row;
+  };
+
+  /** A progress bar in the design's track/fill pair. */
+  MH.bar = (pct, color) => {
+    const t = el("div", "track");
+    const f = el("i");
+    f.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+    if (color) f.style.background = color;
+    return add(t, f);
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Today
+   * ------------------------------------------------------------------ *
+   *
+   * The three-second read: rings, what the coach makes of them, whether
+   * medication was logged, and the four vitals that matter today.
+   *
+   * Every card here is built once and given an `update(resolved, now)`. None
+   * of them assume their role resolved — `MH.readable()` is the gate, and a
+   * role that is absent, blank, stale or of unknown age gets the designed gap
+   * treatment rather than a number nobody can vouch for.
+   */
+
+  /* `el` and `add` come from 07-dom.js — the numbered files are one IIFE, so
+     they are already in scope and must not be redeclared here. */
+
+  /** A card that hides itself entirely when its roles resolve to nothing. */
+  const hideIf = (node, hidden) => { node.style.display = hidden ? "none" : ""; };
+
+  /* ------------------------------------------------------------------ *
+   * Coach + rings
+   * ------------------------------------------------------------------ */
+  const coachCard = () => {
+    const card = el("div", "card hero");
+    const wrap = el("div", "coach");
+    const rings = MH.rings(null);
+    const main = el("div", "coach-main");
+
+    const legend = el("div", "legend");
+    const legendVals = {};
+    for (const spec of MH.RING_SPEC) {
+      const g = el("div", "legend-item");
+      const sw = el("span", "swatch");
+      sw.style.background = spec.color;
+      const label = el("span", "legend-label",
+        spec.key.charAt(0).toUpperCase() + spec.key.slice(1));
+      const val = el("span", "legend-value", "—");
+      legendVals[spec.key] = val;
+      add(legend, add(g, sw, label, val));
+    }
+
+    const eyebrow = el("div", "eyebrow", "Coach");
+    const headline = el("div", "headline", "");
+    const body = el("div", "body", "");
+
+    const next = el("div", "next");
+    const nextText = el("div", "next-text", "");
+    const nextBtn = el("button", "btn", "Start reading");
+    nextBtn.disabled = true;
+    nextBtn.title = "Actions that write back arrive with the write path";
+    add(next, el("div", "next-label", "Next"), nextText, nextBtn);
+
+    const ask = el("div", "ask");
+    const input = el("input");
+    input.type = "text";
+    input.placeholder = "Ask the coach — why is my resting pulse lower this week?";
+    input.disabled = true;
+    const askBtn = el("button", "btn dark", "Ask");
+    askBtn.disabled = true;
+    askBtn.title = "Actions that write back arrive with the write path";
+    add(ask, input, askBtn);
+
+    add(main, legend, el("div", "hr"), eyebrow, headline, body, next, ask);
+    add(wrap, rings, main);
+    add(card, wrap);
+
+    card.update = (R, now) => {
+      /* Rings. A ring with no goal cannot be drawn as a proportion, so it
+         stays empty rather than guessing one. */
+      const vals = {};
+      for (const spec of MH.RING_SPEC) {
+        const v = R[spec.key + "_ring"], g = R[spec.key + "_goal"];
+        const value = MH.readable(v) ? MH.valueIn(v) : null;
+        const goal = MH.readable(g) ? MH.valueIn(g) : null;
+        const p = MH.progress(value, goal);
+        if (p) vals[spec.key] = p;
+        const role = MH.ROLE_BY_KEY[spec.key + "_ring"];
+        legendVals[spec.key].textContent = value == null ? "—"
+          : MH.group(value, 0) + (goal ? "/" + MH.group(goal, 0) : "") +
+            (role.unit ? " " + role.unit : "");
+      }
+      rings.update(vals);
+
+      const c = R.coach_message;
+      const has = !!(c && c.entity_id && !c.blank);
+      hideIf(card, !has && !Object.keys(vals).length);
+      const a = (c && c.attributes) || {};
+      headline.textContent = a.headline || (has ? String(c.value) : "");
+      body.textContent = a.body || "";
+      hideIf(body, !a.body);
+      hideIf(headline, !headline.textContent);
+
+      const who = a.source === "rules" ? "Rules" : (a.source || "Coach");
+      const when = MH.ageLabel(c, now);
+      eyebrow.textContent = has ? ["Coach", who, when].filter(Boolean).join(" · ") : "";
+      hideIf(eyebrow, !has);
+
+      /* The design's next-action strip carries a *distinct* suggestion with a
+         button that performs it. This coach publishes a headline and a body
+         and nothing else, and showing the body twice — once as copy, once as
+         a suggestion — reads like a bug. The strip waits for a real
+         suggestion attribute rather than inventing one. */
+      const suggestion = a.next || a.suggestion || a.action || null;
+      hideIf(next, !suggestion);
+      nextText.textContent = suggestion || "";
+      hideIf(ask, !has);
+    };
+    return card;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Medication
+   * ------------------------------------------------------------------ *
+   * Both states are built, behind a role that resolves nowhere yet — see
+   * PLAN.md §4. The card appears the day a medication source exists.
+   */
+  const medicationCard = () => {
+    const card = el("div", "card med-due");
+    const head = el("div", "chip");
+    const dot = el("span", "dot amber pulse");
+    const eyebrow = el("div", "eyebrow", "Medication");
+    const title = el("div", "med-title", "");
+    const body = el("div", "med-body", "");
+    const actions = el("div", "med-actions");
+    const logBtn = el("button", "btn amber", "Log now");
+    const snoozeBtn = el("button", "btn ghost", "Snooze 1h");
+    for (const b of [logBtn, snoozeBtn]) {
+      b.disabled = true;
+      b.title = "Actions that write back arrive with the write path";
+    }
+    add(actions, logBtn, snoozeBtn);
+    add(head, dot, eyebrow);
+    add(card, head, title, body, actions);
+    card.style.display = "none";
+
+    card.update = (R, now) => {
+      const m = R.medication_logged;
+      const present = !!(m && m.entity_id);
+      hideIf(card, !present);
+      if (!present) return;
+
+      const logged = m.value === true || m.value === "on" || m.value === "logged";
+      card.className = "card " + (logged ? "med-done" : "med-due");
+      dot.className = "dot pulse " + (logged ? "green" : "amber");
+      title.textContent = logged ? "Logged today" : "Not recorded today";
+      body.textContent = logged
+        ? "Recorded " + (MH.ageLabel(m, now) || "today") + "."
+        : "This card stays until today's entry arrives.";
+      hideIf(actions, logged);
+    };
+    return card;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Vitals
+   * ------------------------------------------------------------------ *
+   *
+   * One builder for all four. Each card is a value, a status band, and one
+   * line of support — or the gap treatment, which is a first-class state and
+   * never a hidden card.
+   */
+  const vitalCard = (spec) => {
+    const card = el("div", "card vital");
+    const head = el("div", "head");
+    const title = el("div", "eyebrow", spec.title);
+    const badge = el("span", "badge");
+    add(head, title, badge);
+    const metric = el("div", "metric", "—");
+    const extra = el("div");
+    const support = el("div", "support", "");
+    add(card, head, metric, extra, support);
+
+    card.update = (R, now) => {
+      const out = spec.read(R, now);
+      const tone = out.tone || "";
+      card.className = "card vital " + tone + (out.gap ? " gap" : "");
+      metric.className = "metric " + (tone === "bad" ? "bad" : "");
+
+      metric.textContent = "";
+      if (out.gap) {
+        add(metric, document.createTextNode("—"));
+        metric.style.color = "var(--dim-ink)";
+      } else {
+        metric.style.color = "";
+        add(metric, document.createTextNode(out.value));
+        if (out.unit) add(metric, el("span", "unit", out.unit));
+      }
+
+      badge.className = "badge " + (out.gap ? "gap" : tone || "good");
+      badge.textContent = out.gap ? "Gap" : (out.badge || "");
+      hideIf(badge, !out.gap && !out.badge);
+
+      extra.textContent = "";
+      if (out.extra && !out.gap) add(extra, out.extra);
+      extra.style.margin = out.extra && !out.gap ? "10px 0" : "0";
+
+      support.textContent = out.support || "";
+    };
+    return card;
+  };
+
+  const stepsVital = (config) => vitalCard({
+    title: "Steps",
+    read: (R, now) => {
+      const s = R.steps;
+      if (!MH.readable(s)) return { gap: true, support: MH.gapReason(s, now) };
+      const value = MH.valueIn(s);
+      /* The design defaults the step goal to 10,000 when none is published.
+         A goal is a preference rather than a reading, so a default is a
+         setting the user can change, not an invented measurement. */
+      const goal = MH.readable(R.step_goal) ? MH.valueIn(R.step_goal)
+                 : (config.step_goal || 10000);
+      const p = MH.progress(value, goal);
+      const dist = MH.readable(R.distance) ? MH.valueIn(R.distance) : null;
+      return {
+        value: MH.group(value, 0),
+        tone: "good",
+        badge: p.met ? "Goal met" : "On track",
+        extra: MH.bar(p.pct),
+        support: (p.met ? MH.group(value - goal, 0) + " over " + MH.group(goal, 0)
+                        : MH.group(goal - value, 0) + " to " + MH.group(goal, 0)) +
+                 (dist != null ? " · " + MH.group(dist, 1) + " km" : "")
+      };
+    }
+  });
+
+  const weightVital = () => vitalCard({
+    title: "Weight",
+    read: (R, now) => {
+      const w = R.weight;
+      if (!MH.readable(w)) return { gap: true, support: MH.gapReason(w, now) };
+      const value = MH.valueIn(w);
+      const goal = MH.readable(R.weight_goal) ? MH.valueIn(R.weight_goal) : null;
+      const when = MH.ageLabel(w, now);
+      return {
+        value: MH.group(value, 1), unit: "kg", tone: "info",
+        support: [goal != null ? MH.group(value - goal, 1) + " kg to target" : null, when]
+          .filter(Boolean).join(" · ")
+      };
+    }
+  });
+
+  const bpVital = () => vitalCard({
+    title: "Blood pressure",
+    read: (R, now) => {
+      const s = R.systolic, d = R.diastolic;
+      if (!MH.readable(s) || !MH.readable(d)) {
+        return { gap: true, support: MH.gapReason(MH.readable(s) ? d : s, now) };
+      }
+      const sys = MH.valueIn(s), dia = MH.valueIn(d);
+      const band = MH.bpBand(sys, dia);
+      const pulse = MH.readable(R.cuff_pulse) ? MH.valueIn(R.cuff_pulse) : null;
+      return {
+        value: MH.group(sys, 0) + "/" + MH.group(dia, 0),
+        tone: band.tone, badge: band.label,
+        extra: bpRange(band),
+        support: [MH.ageLabel(s, now),
+                  pulse != null ? "pulse " + MH.group(pulse, 0) + " bpm" : null]
+          .filter(Boolean).join(" · ")
+      };
+    }
+  });
+
+  /* The four-segment clinical axis under a BP reading. Proportions are the
+     design's (3/1/2/2), and the segment for the current band is the only one
+     at full strength — the bar says which band you are in, not merely that
+     bands exist. */
+  const bpRange = (band) => {
+    const segs = [
+      { key: "normal", flex: 3, color: "#a8ddc7" },
+      { key: "elevated", flex: 1, color: "#f6dfa0" },
+      { key: "stage1", flex: 2, color: "#eeb0a0" },
+      { key: "stage2", flex: 2, color: "#c0334d" }
+    ];
+    const bar = el("div");
+    bar.style.cssText = "display:flex;gap:2px;height:5px;";
+    for (const s of segs) {
+      const i = el("i");
+      i.style.cssText = `flex:${s.flex};background:${s.color};border-radius:3px;` +
+                        `opacity:${band && band.key === s.key ? 1 : .35}`;
+      add(bar, i);
+    }
+    return bar;
+  };
+
+  const sleepVital = () => vitalCard({
+    title: "Sleep",
+    read: (R, now) => {
+      const s = R.sleep_duration;
+      if (!MH.readable(s)) return { gap: true, support: MH.gapReason(s, now) };
+      const h = MH.valueIn(s);
+      const whole = Math.floor(h), mins = Math.round((h - whole) * 60);
+      return {
+        value: whole + "h " + String(mins).padStart(2, "0") + "m",
+        tone: h >= 7 ? "good" : h >= 6 ? "warn" : "bad",
+        badge: h >= 7 ? "Good" : h >= 6 ? "Short" : "Very short",
+        support: MH.ageLabel(s, now) || ""
+      };
+    }
+  });
+
+  /* ------------------------------------------------------------------ *
+   * Last workout and treadmill
+   * ------------------------------------------------------------------ */
+  /* `dim` is the design's treatment for a figure that is real but cannot be
+     dated — visible at half strength and captioned as such, rather than
+     dropped. See MH.showable. */
+  const statGroup = (value, caption, dim) => {
+    const g = el("div");
+    if (dim) g.style.opacity = ".5";
+    add(g, el("div", "stat-value", value),
+           el("div", "stat-caption", dim ? caption + " · age unknown" : caption));
+    return g;
+  };
+
+  const workoutCard = () => {
+    const card = el("div", "card");
+    const head = el("div", "head");
+    const eyebrow = el("div", "eyebrow", "");
+    add(head, el("div", "title", "Last workout"), eyebrow);
+    const stats = el("div", "stats");
+    stats.style.marginTop = "16px";
+    add(card, head, stats);
+
+    card.update = (R, now) => {
+      const parts = ["workout_type", "workout_duration", "workout_energy",
+                     "workout_hr_avg", "workout_hr_max"].map((k) => R[k]);
+      const any = parts.some(MH.readable);
+      hideIf(card, !any);
+      if (!any) return;
+
+      const v = (k) => MH.readable(R[k]) ? MH.valueIn(R[k]) : null;
+      const type = MH.readable(R.workout_type) ? String(R.workout_type.value) : "Workout";
+      const dur = v("workout_duration"), en = v("workout_energy");
+      const avg = v("workout_hr_avg"), max = v("workout_hr_max");
+
+      const when = MH.ageLabel(R.workout_start, now) || MH.ageLabel(R.workout_duration, now);
+      const wk = MH.readable(R.workouts_week) ? MH.valueIn(R.workouts_week) : null;
+      eyebrow.textContent = [when, wk != null ? wk + " in 7 days" : null]
+        .filter(Boolean).join(" · ");
+
+      stats.textContent = "";
+      add(stats, statGroup(type, R.workout_type.group_source === "apple_health"
+                                  ? "Apple Health" : "Last session"));
+      if (dur != null) {
+        add(stats, statGroup(MH.group(dur, 0) + " min",
+                             en != null ? MH.group(en, 0) + " kcal" : "duration"));
+      }
+      if (avg != null || max != null) {
+        add(stats, statGroup((avg != null ? MH.group(avg, 0) + " avg" : "—"),
+                             (max != null ? MH.group(max, 0) + " peak bpm" : "average bpm")));
+      }
+    };
+    return card;
+  };
+
+  const treadmillCard = () => {
+    const card = el("div", "card");
+    const head = el("div", "head");
+    const chip = el("div", "chip");
+    const dot = el("span", "dot green pulse");
+    const chipText = el("span", "chip-text", "");
+    add(chip, dot, chipText);
+    add(head, el("div", "title", "Treadmill"), chip);
+    const stats = el("div", "stats");
+    stats.style.marginTop = "16px";
+    add(card, head, stats);
+
+    card.update = (R) => {
+      const keys = ["treadmill_walks_week", "treadmill_time_week",
+                    "treadmill_distance_week", "treadmill_calories_week"];
+      const any = keys.some((k) => MH.showable(R[k])) || MH.showable(R.treadmill_state);
+      hideIf(card, !any);
+      if (!any) return;
+
+      const state = MH.showable(R.treadmill_state) ? String(R.treadmill_state.value) : null;
+      const active = state && /run|active|walking|workout/i.test(state);
+      chipText.textContent = state ? (active ? "Active" : "Idle") : "";
+      dot.style.opacity = active ? "" : ".55";
+
+      /* Weekly totals are supporting figures, not clinical readings: shown
+         dimmed when nothing can date them rather than withheld. */
+      const tile = (key, fmt, caption) => {
+        const r = R[key];
+        if (!MH.showable(r)) return null;
+        return statGroup(fmt(MH.valueIn(r)), caption, !MH.readable(r));
+      };
+
+      stats.textContent = "";
+      add(stats,
+        tile("treadmill_walks_week", (v) => MH.group(v, 0), "walks this week"),
+        tile("treadmill_time_week", (v) => MH.group(v, 0) + " min", "time walked"),
+        tile("treadmill_distance_week", (v) => MH.group(v, 1) + " km", "distance"),
+        tile("treadmill_calories_week", (v) => MH.group(v, 0), "calories"));
+    };
+    return card;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * The view
+   * ------------------------------------------------------------------ */
+  MH.todayView = (config) => {
+    const view = el("div", "view");
+    const cards = [];
+    const keep = (c) => { cards.push(c); return c; };
+
+    const r1 = el("div", "row hero");
+    const med = keep(medicationCard());
+    add(r1, keep(coachCard()), med);
+
+    const r2 = el("div", "row four");
+    add(r2, keep(stepsVital(config || {})), keep(weightVital()),
+            keep(bpVital()), keep(sleepVital()));
+
+    const r3 = el("div", "row two");
+    add(r3, keep(workoutCard()), keep(treadmillCard()));
+
+    add(view, r1, r2, r3);
+
+    /* Stagger the entry animation across a row, as the design does. */
+    cards.forEach((c, i) => { c.style.animationDelay = (i * 0.05).toFixed(2) + "s"; });
+
+    view.update = (resolved, now) => {
+      for (const c of cards) c.update(resolved, now || Date.now());
+
+      /* The hero row is `1fr 380px`. With no medication source — which is the
+         normal case, since nothing publishes one yet — the second column would
+         hold a 380px column of empty page beside the coach. */
+      r1.style.gridTemplateColumns = med.style.display === "none" ? "1fr" : "";
+      /* A row whose every card hid itself would otherwise leave a 16px gap. */
+      for (const row of [r1, r2, r3]) {
+        const visible = Array.prototype.some.call(row.children,
+          (n) => n.style.display !== "none");
+        row.style.display = visible ? "" : "none";
+      }
+    };
+    return view;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * The card element
+   * ------------------------------------------------------------------ *
+   *
+   * One panel card owning the whole page: the sticky tab bar, the four views,
+   * and a single resolver shared between them. A set of separate cards would
+   * have left the tab bar without an owner and made every card repeat both the
+   * resolution and its own statistics round trip.
+   *
+   * Two things happen on different clocks, and conflating them is the mistake
+   * this file is arranged to avoid:
+   *
+   *   `set hass` fires on every state change anywhere in the instance, many
+   *   times a second in a busy house. It re-resolves and updates text in place.
+   *
+   *   Measurement ages come from long-term statistics, which is a websocket
+   *   round trip over ~40 entities. That happens once on mount and then on a
+   *   slow timer — a reading's age does not change meaningfully between two
+   *   state updates a second apart.
+   */
+
+  const VIEW_TITLES = { today: "Today", body: "Body", heart: "Heart", movement: "Movement" };
+
+  /* How often to re-ask statistics for measurement ages. Ten minutes: long
+     enough not to be chatty, short enough that a weigh-in shows up as fresh
+     while the user is still standing next to the scale. */
+  const AGE_REFRESH = 10 * 60 * 1000;
+
+  /* `extends HTMLElement` is evaluated when the class is defined, not when it
+     is instantiated, so naming it directly would throw the moment this file
+     was required under node — and the harness exists precisely so the shipped
+     file is the one under test. */
+  const Base = typeof HTMLElement !== "undefined" ? HTMLElement : class {};
+
+  class MyHealthDashboardCard extends Base {
+    constructor() {
+      super();
+      this._root = this.attachShadow({ mode: "open" });
+      this._config = {};
+      this._built = false;
+      this._tab = "today";
+      this._ages = { at: {}, floors: {} };
+      this._agesAt = 0;
+      this._fetching = false;
+      this._resolved = null;
+    }
+
+    /* Lovelace calls this with the yaml. Config is optional in every part:
+       an empty `type: custom:myhealth-dashboard` has to work, because
+       discovery is the whole point. */
+    setConfig(config) {
+      this._config = Object.assign({}, config || {});
+      if (this._config.tab && VIEW_TITLES[this._config.tab]) this._tab = this._config.tab;
+      this._built = false;
+      if (this._root) this._root.textContent = "";
+      if (this._hass) this._render();
+    }
+
+    getCardSize() { return 12; }
+
+    set hass(hass) {
+      this._hass = hass;
+      this._render();
+    }
+
+    connectedCallback() { if (this._hass) this._render(); }
+
+    _build() {
+      const style = document.createElement("style");
+      style.textContent = MH.CSS;
+
+      const bar = MH.el("div", "bar");
+      const inner = MH.el("div", "bar-inner");
+      const tabs = MH.el("div", "tabs");
+      this._tabButtons = {};
+      for (const key of MH.TABS) {
+        const b = MH.el("button", "tab", VIEW_TITLES[key]);
+        b.type = "button";
+        b.setAttribute("role", "tab");
+        b.addEventListener("click", () => this._select(key));
+        this._tabButtons[key] = b;
+        MH.add(tabs, b);
+      }
+      tabs.setAttribute("role", "tablist");
+
+      const sync = MH.el("div", "sync");
+      this._syncDot = MH.el("span", "dot pulse");
+      this._syncText = MH.el("span", "sync-text", "");
+      MH.add(sync, this._syncDot, this._syncText);
+      MH.add(inner, tabs, sync);
+      MH.add(bar, inner);
+
+      this._views = { today: MH.todayView(this._config) };
+      this._placeholders = {};
+      const holder = MH.el("div");
+      MH.add(holder, this._views.today);
+
+      /* Body, Heart and Movement are the next phase. An empty panel would be
+         a worse lie than saying so. */
+      for (const key of MH.TABS) {
+        if (this._views[key]) continue;
+        const v = MH.el("div", "view");
+        const c = MH.el("div", "card");
+        MH.add(c, MH.el("div", "empty",
+          VIEW_TITLES[key] + " is not built yet — it arrives with the charts."));
+        MH.add(v, c);
+        v.update = () => {};
+        this._views[key] = v;
+        MH.add(holder, v);
+      }
+
+      MH.add(this._root, style, bar, holder);
+      this._built = true;
+      this._paint();
+    }
+
+    _select(tab) {
+      if (!VIEW_TITLES[tab] || tab === this._tab) return;
+      this._tab = tab;
+      this._paint();
+      /* Re-run the entry animation for the view being shown, which is what
+         the design means by "fires on view mount, not on every update". */
+      const v = this._views[tab];
+      for (const card of v.querySelectorAll(".card")) {
+        card.style.animation = "none";
+        void card.offsetWidth;
+        card.style.animation = "";
+      }
+      this._update();
+    }
+
+    _paint() {
+      for (const key of MH.TABS) {
+        const on = key === this._tab;
+        this._tabButtons[key].setAttribute("aria-selected", on ? "true" : "false");
+        this._views[key].style.display = on ? "" : "none";
+      }
+    }
+
+    _render() {
+      if (!this._hass) return;
+      if (!this._built) this._build();
+      this._applyTheme();
+      this._update();
+      this._maybeFetchAges();
+    }
+
+    /* HA decides dark from the user's selected theme, not from the OS, so
+       `prefers-color-scheme` alone would leave a dark-themed instance showing
+       a white card. Stamping the host also pins the answer for a user whose
+       HA theme and OS disagree. */
+    _applyTheme() {
+      const dark = this._hass.themes && this._hass.themes.darkMode;
+      if (dark == null) return;
+      this.setAttribute("data-theme", dark ? "dark" : "light");
+    }
+
+    _update() {
+      const now = Date.now();
+      this._resolved = MH.resolve(this._hass.states, {
+        entities: this._config.entities,
+        stamps: Object.assign(MH.findStamps(this._hass.states), this._config.stamps),
+        exclude: this._config.exclude
+      }, { now, statLast: this._ages.at, floors: this._ages.floors });
+
+      /* A tab with nothing resolved hides itself — the standalone rule made
+         visible. Today always stays, so an instance with no health data at
+         all still has somewhere to show what it could not find. */
+      const live = MH.liveTabs(this._resolved);
+      for (const key of MH.TABS) {
+        const show = key === "today" || live.indexOf(key) >= 0;
+        this._tabButtons[key].style.display = show ? "" : "none";
+      }
+      if (this._tabButtons[this._tab].style.display === "none") this._select("today");
+
+      this._views[this._tab].update(this._resolved, now);
+      this._paintSync(now);
+    }
+
+    _paintSync(now) {
+      const s = this._resolved.last_sync;
+      const when = s && s.measured_at != null ? MH.relTime(s.measured_at, now) : null;
+      this._syncText.textContent = when ? "Synced " + when + " ago" : "";
+      this._syncDot.style.display = when ? "" : "none";
+      /* Amber once a sync is a day late — the chip is the only thing on the
+         page that reports the pipeline rather than the body. */
+      const stale = s && s.age_days != null && s.age_days > 1;
+      this._syncDot.style.background = stale ? "var(--amber)" : "var(--teal)";
+    }
+
+    /**
+     * Measurement ages, once per mount and then slowly.
+     *
+     * Guarded three ways because `set hass` is a firehose: a freshness pass in
+     * flight, one that ran recently, and a resolution that has not happened
+     * yet all mean "not now".
+     */
+    _maybeFetchAges() {
+      if (this._fetching || !this._resolved) return;
+      if (Date.now() - this._agesAt < AGE_REFRESH) return;
+      this._fetching = true;
+      MH.fetchAges(this._hass, this._resolved, { now: Date.now() })
+        .then((got) => {
+          this._ages = got;
+          this._agesAt = Date.now();
+        })
+        .catch(() => { this._agesAt = Date.now(); })
+        .then(() => {
+          this._fetching = false;
+          if (this._built) this._update();
+        });
+    }
+  }
+
+  /* Registration is guarded so the same file still loads under node in
+     tools/resolve_check.js, where there is no customElements and no DOM. */
+  if (typeof customElements !== "undefined" && !customElements.get("myhealth-dashboard")) {
+    customElements.define("myhealth-dashboard", MyHealthDashboardCard);
+
+    window.customCards = window.customCards || [];
+    window.customCards.push({
+      type: "myhealth-dashboard",
+      name: "myHealth Dashboard",
+      description: "A health dashboard over whatever health data this instance already has.",
+      preview: false
+    });
+    /* eslint-disable-next-line no-console */
+    console.info("%c myhealth-dashboard %c " + MH.VERSION + " ",
+                 "background:#0d2233;color:#fff", "background:#16c397;color:#0d2233");
+  }
 
   /* ------------------------------------------------------------------ *
    * Exit
