@@ -73,6 +73,38 @@
     /* The statistics pass is async; give it a moment, then mark the page ready
        so a screenshot waits for the real ages rather than the first paint. */
     setTimeout(() => { document.title = "ready"; }, 900);
+
+    /* ?churn=N re-sets hass N times with an unrelated entity changing, which
+       is what a busy instance does all day. It exists because the charts once
+       re-ran their draw-in animation on every one of those, and counting the
+       SVG paths actually rebuilt is the only honest way to show they no
+       longer do. */
+    const churn = parseInt(q.get("churn") || "0", 10);
+    if (churn > 0) {
+      setTimeout(() => {
+        let redraws = 0;
+        new MutationObserver((recs) => {
+          for (const r of recs) {
+            for (const n of r.addedNodes) if (n.tagName === "path") redraws++;
+          }
+        }).observe(card.shadowRoot, { childList: true, subtree: true });
+
+        const victim = Object.keys(states).find((k) => !/health|withings|treadmill|stride/.test(k));
+        for (let i = 0; i < churn; i++) {
+          const next = Object.assign({}, states);
+          next[victim] = Object.assign({}, states[victim], { state: "churn" + i });
+          card.hass = Object.assign({}, hass, { states: next });
+        }
+        setTimeout(() => {
+          const box = document.getElementById("err");
+          box.hidden = false;
+          box.style.color = redraws ? "#a02940" : "#0f6d52";
+          box.textContent = `churned hass ${churn}x with an unrelated entity → ` +
+                            `${redraws} chart paths rebuilt` +
+                            (redraws ? "  (charts are still redrawing)" : "  (no redraw)");
+        }, 400);
+      }, 1500);
+    }
   } catch (e) { fail(e); }
 })();
 const surface = (what) => {

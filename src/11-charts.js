@@ -68,8 +68,24 @@
     const axis = MH.el("div", "axis");
     MH.add(root, wrap, axis);
 
+    let drawn = null;
+
     root.update = (series, cfg) => {
       cfg = cfg || {};
+
+      /* `set hass` fires on every state change anywhere in the instance — a
+         busy house does that several times a second. Redrawing here reapplies
+         `drawLine` to every path, so the charts visibly re-animate over and
+         over. Nothing below depends on anything but the data, so an unchanged
+         signature means there is nothing to do. */
+      const sig = JSON.stringify([
+        series.map((s) => [s.color, s.width,
+                           (s.points || []).map((p) => [p.start, p.value])]),
+        cfg.target, cfg.bands, cfg.min, cfg.max
+      ]);
+      if (sig === drawn) return;
+      drawn = sig;
+
       while (lines.firstChild) lines.removeChild(lines.firstChild);
       while (grid.firstChild) grid.removeChild(grid.firstChild);
       while (bands.firstChild) bands.removeChild(bands.firstChild);
@@ -156,8 +172,17 @@
     MH.add(root, wrap, axis);
     MH.add(wrap, holder);
 
+    let drawn = null;
+
     root.update = (points, cfg) => {
       cfg = cfg || {};
+      /* Same reason as the line chart: rebuilding thirty nodes on every state
+         change in the house is work nobody asked for. */
+      const sig = JSON.stringify([(points || []).map((p) => [p.start, p.value, p.partial]),
+                                  cfg.goal]);
+      if (sig === drawn) return;
+      drawn = sig;
+
       holder.textContent = "";
       axis.textContent = "";
       if (!points || !points.length) {
@@ -201,8 +226,12 @@
     p.setAttribute("stroke-linecap", "round");
     p.setAttribute("vector-effect", "non-scaling-stroke");
     svg.appendChild(p);
+    let drawn = null;
     svg.update = (points) => {
       const pts = (points || []).filter((x) => x.value != null);
+      const sig = JSON.stringify(pts.map((x) => [x.start, x.value]));
+      if (sig === drawn) return;
+      drawn = sig;
       if (pts.length < 2) { p.removeAttribute("d"); return; }
       p.setAttribute("d", path(pts, scaler(pts, W, H - 4, {})));
     };

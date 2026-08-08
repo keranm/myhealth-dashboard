@@ -2109,7 +2109,7 @@ ${DARK_CSS}
         void card.offsetWidth;
         card.style.animation = "";
       }
-      this._update();
+      this._update(true);
     }
 
     _paint() {
@@ -2138,13 +2138,56 @@ ${DARK_CSS}
       this.setAttribute("data-theme", dark ? "dark" : "light");
     }
 
-    _update() {
+    /**
+     * Has anything this card cares about actually changed?
+     *
+     * `set hass` fires on every state change in the instance — a doorbell, a
+     * light, a power meter updating every second. Re-resolving 44 roles across
+     * 1,500-odd entities on each of those is wasted work, and it made the
+     * charts re-run their draw-in animation continuously.
+     *
+     * HA replaces the state object when an entity changes, so identity is a
+     * sound and very cheap test. A change in the number of entities means
+     * something was added or removed and discovery deserves another look.
+     */
+    _worthUpdating() {
+      if (!this._resolved || !this._watch) return true;
+      const s = this._hass.states;
+      const ids = Object.keys(s);
+      if (ids.length !== this._entityCount) return true;
+      for (const id of this._watch) {
+        if (s[id] !== this._seen[id]) return true;
+      }
+      return false;
+    }
+
+    /* Remember exactly what was read, so the next hass can be compared. */
+    _rememberWatched() {
+      const s = this._hass.states;
+      const watch = [];
+      for (const key in this._resolved) {
+        const r = this._resolved[key];
+        if (r.entity_id) watch.push(r.entity_id);
+      }
+      /* Stamps are read for measurement times but are not a role's entity. */
+      for (const id of Object.values(this._stamps || {})) watch.push(id);
+      this._watch = watch;
+      this._seen = {};
+      for (const id of watch) this._seen[id] = s[id];
+      this._entityCount = Object.keys(s).length;
+    }
+
+    _update(force) {
+      if (!force && !this._worthUpdating()) return;
       const now = Date.now();
+      this._stamps = Object.assign(MH.findStamps(this._hass.states),
+                                   this._config.stamps);
       this._resolved = MH.resolve(this._hass.states, {
         entities: this._config.entities,
-        stamps: Object.assign(MH.findStamps(this._hass.states), this._config.stamps),
+        stamps: this._stamps,
         exclude: this._config.exclude
       }, { now, statLast: this._ages.at, floors: this._ages.floors });
+      this._rememberWatched();
 
       /* A tab with nothing resolved hides itself — the standalone rule made
          visible. Today always stays, so an instance with no health data at
@@ -2228,7 +2271,7 @@ ${DARK_CSS}
         .catch(() => { this._agesAt = Date.now(); })
         .then(() => {
           this._fetching = false;
-          if (this._built) this._update();
+          if (this._built) this._update(true);
         });
     }
   }
@@ -2482,8 +2525,24 @@ ${DARK_CSS}
     const axis = MH.el("div", "axis");
     MH.add(root, wrap, axis);
 
+    let drawn = null;
+
     root.update = (series, cfg) => {
       cfg = cfg || {};
+
+      /* `set hass` fires on every state change anywhere in the instance — a
+         busy house does that several times a second. Redrawing here reapplies
+         `drawLine` to every path, so the charts visibly re-animate over and
+         over. Nothing below depends on anything but the data, so an unchanged
+         signature means there is nothing to do. */
+      const sig = JSON.stringify([
+        series.map((s) => [s.color, s.width,
+                           (s.points || []).map((p) => [p.start, p.value])]),
+        cfg.target, cfg.bands, cfg.min, cfg.max
+      ]);
+      if (sig === drawn) return;
+      drawn = sig;
+
       while (lines.firstChild) lines.removeChild(lines.firstChild);
       while (grid.firstChild) grid.removeChild(grid.firstChild);
       while (bands.firstChild) bands.removeChild(bands.firstChild);
@@ -2570,8 +2629,17 @@ ${DARK_CSS}
     MH.add(root, wrap, axis);
     MH.add(wrap, holder);
 
+    let drawn = null;
+
     root.update = (points, cfg) => {
       cfg = cfg || {};
+      /* Same reason as the line chart: rebuilding thirty nodes on every state
+         change in the house is work nobody asked for. */
+      const sig = JSON.stringify([(points || []).map((p) => [p.start, p.value, p.partial]),
+                                  cfg.goal]);
+      if (sig === drawn) return;
+      drawn = sig;
+
       holder.textContent = "";
       axis.textContent = "";
       if (!points || !points.length) {
@@ -2615,8 +2683,12 @@ ${DARK_CSS}
     p.setAttribute("stroke-linecap", "round");
     p.setAttribute("vector-effect", "non-scaling-stroke");
     svg.appendChild(p);
+    let drawn = null;
     svg.update = (points) => {
       const pts = (points || []).filter((x) => x.value != null);
+      const sig = JSON.stringify(pts.map((x) => [x.start, x.value]));
+      if (sig === drawn) return;
+      drawn = sig;
       if (pts.length < 2) { p.removeAttribute("d"); return; }
       p.setAttribute("d", path(pts, scaler(pts, W, H - 4, {})));
     };
