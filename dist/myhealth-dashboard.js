@@ -285,6 +285,102 @@
     { key: "medication_logged", label: "Medication logged today", tab: "today", unit: null, window: 1,
       match: { any: [["medication", "logged"], ["medication"]] } },
 
+    /* --- Strength work ---------------------------------------------- *
+     * A daily budget of small sets — press-ups, sit-ups, calf raises — planned
+     * by a ramp that adapts weekly, and counted either by a tap or by a phone
+     * on the floor watching a face come down towards it. Written by GROOVE.
+     *
+     * Reps are the best-behaved metric on this page, and it is worth saying why,
+     * because every other role here is shaped by the opposite problem. A health
+     * sensor holds its last value forever, which is what 04-freshness.js exists
+     * to survive. A rep is an event with a real timestamp at the moment it
+     * happened, accumulated by a utility_meter that resets at midnight — so a
+     * daily count of 0 at 09:00 genuinely means none yet today, not "the phone
+     * has not synced". The one-day windows below are therefore honest.
+     *
+     * `group` is deliberately NOT used, despite these six describing one day's
+     * plan. The coherence pass resolves a group from a single source, and these
+     * legitimately come from two — the totals are min_max helpers, the
+     * derived figures are template helpers. Coherence is enforced by naming
+     * instead: every match below *requires* the "groove" token, so they cannot
+     * be filled from two different producers. That is a stronger guarantee than
+     * the group pass gives, not a weaker one.
+     *
+     * Absent is the ordinary case for anyone who does not run GROOVE, and these
+     * degrade to GAP like everything else. */
+    { key: "strength_target_today", label: "Strength target today", tab: "today",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["groove", "target", "total"]] } },
+
+    { key: "strength_done_today", label: "Strength done today", tab: "today",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["groove", "done", "total"]] } },
+
+    { key: "strength_remaining", label: "Strength still to do", tab: "today",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["groove", "remaining"]],
+               not: ["pushups", "situps", "calf"] } },
+
+    { key: "strength_progress", label: "Strength progress", tab: "today",
+      unit: "%", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["%"], any: [["groove", "progress"]] } },
+
+    /* What the next nudge would ask for. Two roles because the producing
+       entities are two — a template helper cannot carry attributes, so the
+       number and the movement are separate sensors computed from the same
+       inputs. They update together and neither reads the other. */
+    { key: "strength_next_ask", label: "Next set", tab: "today",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["groove", "next", "ask"]] } },
+
+    { key: "strength_next_exercise", label: "Next movement", tab: "today",
+      unit: null, window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { any: [["groove", "next", "exercise"]] } },
+
+    { key: "strength_streak", label: "Strength streak", tab: "today",
+      unit: "days", window: null,
+      match: { units: ["days"], any: [["groove", "streak"]] } },
+
+    /* --- Strength, per movement, on Movement ------------------------ *
+     * `not: ["weekly", "monthly", "counted", "suggested", "remaining"]` is
+     * load-bearing. A lifetime counter, a weekly rollup and a ramp suggestion
+     * all carry the movement's name and the unit `reps`, and any of them would
+     * resolve as today's count and read as plausible. Only the utility_meter on
+     * a daily cycle is today's work. */
+    { key: "pushups_daily", label: "Press-ups today", tab: "movement",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["pushups", "daily"], ["press", "ups", "daily"]],
+               not: ["weekly", "monthly", "counted", "suggested", "remaining", "target"] } },
+
+    { key: "situps_daily", label: "Sit-ups today", tab: "movement",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["situps", "daily"], ["sit", "ups", "daily"]],
+               not: ["weekly", "monthly", "counted", "suggested", "remaining", "target"] } },
+
+    { key: "calf_raises_daily", label: "Calf raises today", tab: "movement",
+      unit: "reps", window: 1,
+      stamp: [["groove", "last", "logged"]],
+      match: { units: ["reps"], any: [["calf", "raises", "daily"]],
+               not: ["weekly", "monthly", "counted", "suggested", "remaining", "target"] } },
+
+    /* The second role that is a verb. `script.groove_log` takes an exercise and
+       a number of reps and is the only supported way to record work, so the
+       `Log now` action on Today has something real to call at last.
+
+       Domain-restricted to `script` for the same reason coach_ask is: the token
+       "log" appears on plenty of sensors that must never resolve here. */
+    { key: "strength_log", label: "Log reps", tab: "today", unit: null, window: null,
+      domain: /^script\./,
+      match: { any: [["groove", "log"]] } },
+
     /* --- Sync freshness --------------------------------------------- *
      * Drives the `SYNCED 40S AGO` chip. Unlike every other role this one is
      * *about* time, so its state is a timestamp rather than a measurement. */
@@ -3241,13 +3337,44 @@ ${DARK_CSS}
     for (const k in tTiles) MH.add(treadGrid, tTiles[k]);
     MH.add(treadCard, treadHead, treadGrid);
 
+    /* --- Strength ---------------------------------------------------- *
+     * Press-ups, from GROOVE. Its roles resolved from the day they existed but
+     * nothing rendered them, so the work was in the database and invisible on the
+     * page — which is the same as not being recorded, from the reader's side.
+     *
+     * Built from the treadmill card's anatomy on purpose: same card, head, chip and
+     * tiles, because this is another thing-that-counts-reps sitting beside a
+     * thing-that-counts-kilometres, and it should not look like a different product. */
+    const strengthCard = MH.el("div", "card");
+    const strengthHead = MH.el("div", "head");
+    const streakChip = MH.el("div", "chip");
+    const streakDot = MH.el("span", "dot green");
+    const streakText = MH.el("span", "chip-text", "");
+    MH.add(streakChip, streakDot, streakText);
+    MH.add(strengthHead, MH.el("div", "title", "Press-ups"), streakChip);
+
+    const strengthValue = MH.el("div", "metric", "—");
+    const strengthBar = MH.bar(0); strengthBar.style.height = "8px";
+    const strengthNote = MH.el("div", "support", "");
+
+    const sTiles = { done: statTile("Done today"), target: statTile("Target today"),
+                     left: statTile("Still to do"), next: statTile("Next set") };
+    const strengthGrid = MH.el("div", "tiles");
+    for (const k in sTiles) MH.add(strengthGrid, sTiles[k]);
+
+    const strengthBars = MH.barChart({ height: 150 });
+    const strengthBarsNote = MH.el("div", "support", "");
+    MH.add(strengthCard, strengthHead, strengthValue, strengthBar, strengthNote,
+           MH.el("div", "hr"), strengthGrid, strengthBars, strengthBarsNote);
+
     const r1 = MH.el("div", "row hero-left");
     MH.add(r1, hero, barsCard);
-    MH.add(view, r1, treadCard);
+    MH.add(view, r1, strengthCard, treadCard);
 
     view.series = () => [
       { key: "steps", role: "steps", days: 30, mode: "daily_total" },
-      { key: "active_energy", role: "active_energy", days: 30, mode: "daily_total" }
+      { key: "active_energy", role: "active_energy", days: 30, mode: "daily_total" },
+      { key: "pushups", role: "pushups_daily", days: 30, mode: "daily_total" }
     ];
 
     view.update = (R, now, S) => {
@@ -3308,6 +3435,54 @@ ${DARK_CSS}
       put(tTiles.dist, "treadmill_distance_week", (v) => MH.group(v, 1) + " km");
       put(tTiles.cal, "treadmill_calories_week", (v) => MH.group(v, 0));
       put(tTiles.month, "treadmill_distance_month", (v) => MH.group(v, 1) + " km");
+
+      /* Press-ups. Hidden entirely when GROOVE is not installed — the standalone
+         rule, same as the treadmill card above it. */
+      const sKeys = ["pushups_daily", "strength_target_today", "strength_remaining",
+                     "strength_streak", "strength_next_ask"];
+      hideIf2(strengthCard, !sKeys.some((k) => MH.showable(R[k])));
+
+      const doneR = R.pushups_daily;
+      const done = MH.showable(doneR) ? MH.valueIn(doneR) : null;
+      const targetR = R.strength_target_today;
+      const target = MH.showable(targetR) ? MH.valueIn(targetR) : null;
+
+      /* The streak is the chip, not a tile. It is the number that makes somebody
+         come back, and it belongs where the treadmill puts its status. */
+      const streak = MH.showable(R.strength_streak) ? MH.valueIn(R.strength_streak) : null;
+      streakText.textContent = streak != null
+        ? (streak === 1 ? "1 day streak" : MH.group(streak, 0) + " day streak") : "";
+      streakDot.style.opacity = streak ? "" : ".55";
+      hideIf2(streakChip, streak == null);
+
+      if (done != null && target) {
+        const p = MH.progress(done, target);
+        strengthValue.textContent = MH.group(done, 0) + " of " + MH.group(target, 0);
+        strengthBar.firstChild.style.width = p.pct + "%";
+        strengthNote.textContent = [
+          p.met ? "Day complete" : MH.group(target - done, 0) + " still to do",
+          MH.ageLabel(doneR, now)
+        ].filter(Boolean).join(" · ");
+      } else if (done != null) {
+        /* A count with no target is still work done — say the number rather than a
+           dash, and say why the rest is missing. */
+        strengthValue.textContent = MH.group(done, 0);
+        strengthBar.firstChild.style.width = "0%";
+        strengthNote.textContent = "No target set for today";
+      } else {
+        strengthValue.textContent = "—";
+        strengthBar.firstChild.style.width = "0%";
+        strengthNote.textContent = MH.gapReason(doneR, now);
+      }
+
+      put(sTiles.done, "pushups_daily", (v) => MH.group(v, 0));
+      put(sTiles.target, "strength_target_today", (v) => MH.group(v, 0));
+      put(sTiles.left, "strength_remaining", (v) => MH.group(v, 0));
+      put(sTiles.next, "strength_next_ask", (v) => MH.group(v, 0));
+
+      strengthBars.update(S.pushups || [], { goal: target || 0 });
+      strengthBarsNote.textContent = (S.pushups || []).length
+        ? "Daily totals · last 30 days" : "";
     };
     return view;
   };

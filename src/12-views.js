@@ -379,13 +379,44 @@
     for (const k in tTiles) MH.add(treadGrid, tTiles[k]);
     MH.add(treadCard, treadHead, treadGrid);
 
+    /* --- Strength ---------------------------------------------------- *
+     * Press-ups, from GROOVE. Its roles resolved from the day they existed but
+     * nothing rendered them, so the work was in the database and invisible on the
+     * page — which is the same as not being recorded, from the reader's side.
+     *
+     * Built from the treadmill card's anatomy on purpose: same card, head, chip and
+     * tiles, because this is another thing-that-counts-reps sitting beside a
+     * thing-that-counts-kilometres, and it should not look like a different product. */
+    const strengthCard = MH.el("div", "card");
+    const strengthHead = MH.el("div", "head");
+    const streakChip = MH.el("div", "chip");
+    const streakDot = MH.el("span", "dot green");
+    const streakText = MH.el("span", "chip-text", "");
+    MH.add(streakChip, streakDot, streakText);
+    MH.add(strengthHead, MH.el("div", "title", "Press-ups"), streakChip);
+
+    const strengthValue = MH.el("div", "metric", "—");
+    const strengthBar = MH.bar(0); strengthBar.style.height = "8px";
+    const strengthNote = MH.el("div", "support", "");
+
+    const sTiles = { done: statTile("Done today"), target: statTile("Target today"),
+                     left: statTile("Still to do"), next: statTile("Next set") };
+    const strengthGrid = MH.el("div", "tiles");
+    for (const k in sTiles) MH.add(strengthGrid, sTiles[k]);
+
+    const strengthBars = MH.barChart({ height: 150 });
+    const strengthBarsNote = MH.el("div", "support", "");
+    MH.add(strengthCard, strengthHead, strengthValue, strengthBar, strengthNote,
+           MH.el("div", "hr"), strengthGrid, strengthBars, strengthBarsNote);
+
     const r1 = MH.el("div", "row hero-left");
     MH.add(r1, hero, barsCard);
-    MH.add(view, r1, treadCard);
+    MH.add(view, r1, strengthCard, treadCard);
 
     view.series = () => [
       { key: "steps", role: "steps", days: 30, mode: "daily_total" },
-      { key: "active_energy", role: "active_energy", days: 30, mode: "daily_total" }
+      { key: "active_energy", role: "active_energy", days: 30, mode: "daily_total" },
+      { key: "pushups", role: "pushups_daily", days: 30, mode: "daily_total" }
     ];
 
     view.update = (R, now, S) => {
@@ -446,6 +477,54 @@
       put(tTiles.dist, "treadmill_distance_week", (v) => MH.group(v, 1) + " km");
       put(tTiles.cal, "treadmill_calories_week", (v) => MH.group(v, 0));
       put(tTiles.month, "treadmill_distance_month", (v) => MH.group(v, 1) + " km");
+
+      /* Press-ups. Hidden entirely when GROOVE is not installed — the standalone
+         rule, same as the treadmill card above it. */
+      const sKeys = ["pushups_daily", "strength_target_today", "strength_remaining",
+                     "strength_streak", "strength_next_ask"];
+      hideIf2(strengthCard, !sKeys.some((k) => MH.showable(R[k])));
+
+      const doneR = R.pushups_daily;
+      const done = MH.showable(doneR) ? MH.valueIn(doneR) : null;
+      const targetR = R.strength_target_today;
+      const target = MH.showable(targetR) ? MH.valueIn(targetR) : null;
+
+      /* The streak is the chip, not a tile. It is the number that makes somebody
+         come back, and it belongs where the treadmill puts its status. */
+      const streak = MH.showable(R.strength_streak) ? MH.valueIn(R.strength_streak) : null;
+      streakText.textContent = streak != null
+        ? (streak === 1 ? "1 day streak" : MH.group(streak, 0) + " day streak") : "";
+      streakDot.style.opacity = streak ? "" : ".55";
+      hideIf2(streakChip, streak == null);
+
+      if (done != null && target) {
+        const p = MH.progress(done, target);
+        strengthValue.textContent = MH.group(done, 0) + " of " + MH.group(target, 0);
+        strengthBar.firstChild.style.width = p.pct + "%";
+        strengthNote.textContent = [
+          p.met ? "Day complete" : MH.group(target - done, 0) + " still to do",
+          MH.ageLabel(doneR, now)
+        ].filter(Boolean).join(" · ");
+      } else if (done != null) {
+        /* A count with no target is still work done — say the number rather than a
+           dash, and say why the rest is missing. */
+        strengthValue.textContent = MH.group(done, 0);
+        strengthBar.firstChild.style.width = "0%";
+        strengthNote.textContent = "No target set for today";
+      } else {
+        strengthValue.textContent = "—";
+        strengthBar.firstChild.style.width = "0%";
+        strengthNote.textContent = MH.gapReason(doneR, now);
+      }
+
+      put(sTiles.done, "pushups_daily", (v) => MH.group(v, 0));
+      put(sTiles.target, "strength_target_today", (v) => MH.group(v, 0));
+      put(sTiles.left, "strength_remaining", (v) => MH.group(v, 0));
+      put(sTiles.next, "strength_next_ask", (v) => MH.group(v, 0));
+
+      strengthBars.update(S.pushups || [], { goal: target || 0 });
+      strengthBarsNote.textContent = (S.pushups || []).length
+        ? "Daily totals · last 30 days" : "";
     };
     return view;
   };
